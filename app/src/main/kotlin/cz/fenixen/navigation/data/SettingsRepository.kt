@@ -35,7 +35,13 @@ data class AppSettings(
     val geocoderUrl: String = DEFAULT_GEOCODER_URL,
     val mapTheme: MapTheme = MapTheme.AUTO,
     val simulateDriving: Boolean = false,
+    /** TomTom API key for live traffic (free tier at developer.tomtom.com). */
+    val tomtomKey: String = "",
+    val trafficEnabled: Boolean = true,
+    val trafficOnMap: Boolean = true,
 ) {
+    val hasTraffic: Boolean get() = trafficEnabled && tomtomKey.isNotBlank()
+
     fun zoomLock(display: DisplayKind) = if (display == DisplayKind.PHONE) phoneZoomLock else carZoomLock
 
     companion object {
@@ -66,6 +72,9 @@ class SettingsRepository(context: Context, private val scope: CoroutineScope) {
         val geocoderUrl = stringPreferencesKey("geocoder_url")
         val theme = stringPreferencesKey("map_theme")
         val simulate = booleanPreferencesKey("simulate")
+        val tomtomKey = stringPreferencesKey("tomtom_key")
+        val traffic = booleanPreferencesKey("traffic")
+        val trafficOnMap = booleanPreferencesKey("traffic_on_map")
     }
 
     val settings: Flow<AppSettings> = store.data.map { p ->
@@ -82,6 +91,9 @@ class SettingsRepository(context: Context, private val scope: CoroutineScope) {
             geocoderUrl = p[Keys.geocoderUrl]?.takeIf { it.isNotBlank() } ?: AppSettings.DEFAULT_GEOCODER_URL,
             mapTheme = p[Keys.theme]?.let { runCatching { MapTheme.valueOf(it) }.getOrNull() } ?: MapTheme.AUTO,
             simulateDriving = p[Keys.simulate] ?: false,
+            tomtomKey = p[Keys.tomtomKey].orEmpty(),
+            trafficEnabled = p[Keys.traffic] ?: true,
+            trafficOnMap = p[Keys.trafficOnMap] ?: true,
         )
     }
 
@@ -104,6 +116,9 @@ class SettingsRepository(context: Context, private val scope: CoroutineScope) {
     fun setGeocoderUrl(v: String) = edit { it[Keys.geocoderUrl] = v.trim() }
     fun setMapTheme(v: MapTheme) = edit { it[Keys.theme] = v.name }
     fun setSimulateDriving(v: Boolean) = edit { it[Keys.simulate] = v }
+    fun setTomTomKey(v: String) = edit { it[Keys.tomtomKey] = v.trim() }
+    fun setTrafficEnabled(v: Boolean) = edit { it[Keys.traffic] = v }
+    fun setTrafficOnMap(v: Boolean) = edit { it[Keys.trafficOnMap] = v }
 
     private fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
         scope.launch { store.edit { block(it) } }

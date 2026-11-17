@@ -8,6 +8,10 @@ import cz.fenixen.navigation.core.navigation.NavigationSession
 import cz.fenixen.navigation.core.navigation.NavigationState
 import cz.fenixen.navigation.core.routing.ValhallaRoutingProvider
 import cz.fenixen.navigation.core.search.PhotonGeocoder
+import cz.fenixen.navigation.core.traffic.TomTomTrafficProvider
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
 import cz.fenixen.navigation.data.DisplayKind
 import cz.fenixen.navigation.data.PlacesRepository
 import cz.fenixen.navigation.data.SettingsRepository
@@ -53,7 +57,18 @@ class AppGraph(app: Application) {
 
     val routing = ValhallaRoutingProvider(http, baseUrl = { settings.current.value.routingUrl })
     val geocoder = PhotonGeocoder(http, baseUrl = { settings.current.value.geocoderUrl })
-    val session = NavigationSession(routing, appScope)
+    val traffic = TomTomTrafficProvider(http, apiKey = { settings.current.value.tomtomKey })
+    val session = NavigationSession(
+        routing = routing,
+        scope = appScope,
+        traffic = { traffic.takeIf { settings.current.value.hasTraffic } },
+    )
+
+    /** TomTom key for the traffic tiles on the map (null = overlay off). */
+    val trafficTilesKey: StateFlow<String?> = settings.current
+        .map { s -> s.tomtomKey.takeIf { s.hasTraffic && s.trafficOnMap } }
+        .distinctUntilChanged()
+        .stateIn(appScope, SharingStarted.Eagerly, null)
 
     val location = LocationRepository(app)
     val locationCoordinator = LocationCoordinator(appScope, location, session, settings)

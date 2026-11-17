@@ -6,8 +6,10 @@ import cz.fenixen.navigation.core.model.Place
 import cz.fenixen.navigation.core.model.Route
 import cz.fenixen.navigation.core.model.RouteOptions
 import cz.fenixen.navigation.core.model.RouteRequest
+import cz.fenixen.navigation.core.model.RouteTraffic
 import cz.fenixen.navigation.core.routing.RoutingException
 import cz.fenixen.navigation.core.routing.RoutingProvider
+import cz.fenixen.navigation.core.traffic.TrafficProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -17,7 +19,11 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 sealed interface NavigationState {
     data object Idle : NavigationState
@@ -63,6 +69,7 @@ sealed interface NavigationEvent {
     data object Arrived : NavigationEvent
     data object NavigationEnded : NavigationEvent
     data class SpeedLimitExceeded(val limitKph: Int) : NavigationEvent
+    data class TrafficUpdated(val delaySeconds: Double) : NavigationEvent
 }
 
 /**
@@ -79,6 +86,9 @@ class NavigationSession(
     private val trackerConfig: TrackerConfig = TrackerConfig(),
     private val rerouteCooldownMs: Long = 4_000,
     private val speedingToleranceKph: Int = 5,
+    /** Live traffic source; returns null when not configured (e.g. no API key). */
+    private val traffic: () -> TrafficProvider? = { null },
+    private val trafficRefreshMs: Long = 180_000,
 ) {
     private val _state = MutableStateFlow<NavigationState>(NavigationState.Idle)
     val state: StateFlow<NavigationState> = _state.asStateFlow()
@@ -96,6 +106,12 @@ class NavigationSession(
     private var planner: AnnouncementPlanner? = null
     private var routingJob: Job? = null
     private var enrichJob: Job? = null
+    private var trafficJob: Job? = null
+    private var previewTrafficJob: Job? = null
+    private var eta = EtaEstimator()
+    /** Router-based (uncorrected) progress of the last fix – baseline for traffic factor. */
+    private var lastRawProgress: RouteProgress? = null
+    private var announcedDelaySeconds = 0.0
     private var lastRerouteAt = Long.MIN_VALUE / 2
     /** Bumped for every new active route so stale async results can be detected. */
     private var routeGeneration = 0
@@ -117,7 +133,9 @@ class NavigationSession(
                 } else if (autoStart) {
                     beginNavigation(destination, routes.first())
                 } else {
-                    _state.value = NavigationState.Preview(destination, routes)
+                    val preview = NavigationState.Preview(destination, routes)
+                    _state.value = preview
+                    fetchPreviewTraffic(preview)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -148,6 +166,8 @@ class NavigationSession(
         val wasNavigating = _state.value is NavigationState.Navigating
         routingJob?.cancel()
         enrichJob?.cancel()
+        trafficJob?.cancel()
+        previewTrafficJob?.cancel()
         tracker = null
         planner = null
         _state.value = NavigationState.Idle
@@ -160,7 +180,17 @@ class NavigationSession(
         val tracker = tracker ?: return
         val planner = planner ?: return
 
-        val result = tracker.update(fix)
+        val raw = tracker.update(fix)
+        lastRawProgress = raw.progress
+        // ETA: časy routeru × (doprava) × (naučené tempo jízdy).
+        val factorRemaining = eta.update(raw.progress.durationRemaining, fix.speedMps, clock())
+        val factor = if (raw.progress.durationRemaining > 0) factorRemaining / raw.progress.durationRemaining else 1.0
+        val result = raw.copy(
+            progress = raw.progress.copy(
+                durationRemaining = factorRemaining,
+                durationToUpcoming = raw.progress.durationToUpcoming * factor,
+            ),
+        )
         val limit = result.progress.speedLimitKph
         val speedKph = fix.speedMps?.times(3.6)
         val speeding = limit != null && speedKph != null && speedKph > limit + speedingToleranceKph
@@ -181,6 +211,9 @@ class NavigationSession(
 
     private fun beginNavigation(destination: Place, route: Route) {
         routingJob?.cancel()
+        previewTrafficJob?.cancel()
+        eta = EtaEstimator()
+        announcedDelaySeconds = route.traffic?.delaySeconds ?: 0.0
         activateRoute(route)
         _state.value = NavigationState.Navigating(destination, route)
         _events.tryEmit(NavigationEvent.NavigationStarted)
@@ -191,7 +224,74 @@ class NavigationSession(
         routeGeneration++
         tracker = RouteProgressTracker(route, trackerConfig)
         planner = AnnouncementPlanner(route)
+        lastRawProgress = null
+        eta.onNewRoute()
         enrichSpeedLimits(route, routeGeneration)
+        startTrafficUpdates(routeGeneration)
+    }
+
+    /** Periodically refreshes traffic for the remaining part of the active route. */
+    private fun startTrafficUpdates(generation: Int) {
+        trafficJob?.cancel()
+        val provider = traffic() ?: return
+        trafficJob = scope.launch {
+            while (generation == routeGeneration && _state.value is NavigationState.Navigating) {
+                val tracker = tracker ?: break
+                val raw = lastRawProgress
+                val from = raw?.distanceAlong ?: 0.0
+                val result = try {
+                    provider.traffic(tracker.route, from)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    null // doprava je bonus – bez ní jedeme dál podle routeru
+                }
+                if (result != null && generation == routeGeneration) applyTraffic(result, raw)
+                delay(trafficRefreshMs)
+            }
+        }
+    }
+
+    private fun applyTraffic(result: RouteTraffic, raw: RouteProgress?) {
+        val tracker = tracker ?: return
+        val enriched = tracker.route.copy(traffic = result)
+        tracker.replaceRouteData(enriched)
+        val rawRemaining = raw?.durationRemaining ?: enriched.durationSeconds
+        eta.onTraffic(result, rawRemaining)
+        val current = _state.value as? NavigationState.Navigating ?: return
+        _state.value = current.copy(route = enriched)
+        _events.tryEmit(NavigationEvent.TrafficUpdated(result.delaySeconds))
+        // Hlásíme jen výrazné zhoršení (kolona před námi), ne každý drobný výkyv.
+        val delay = result.delaySeconds
+        if (delay >= TRAFFIC_ANNOUNCE_MIN_S && delay - announcedDelaySeconds >= TRAFFIC_ANNOUNCE_STEP_S) {
+            val minutes = (delay / 60).roundToInt()
+            speak("Na trase je hustý provoz, zdržení asi $minutes ${minutesWord(minutes)}.")
+            announcedDelaySeconds = delay
+        } else if (delay < announcedDelaySeconds - TRAFFIC_ANNOUNCE_STEP_S) {
+            announcedDelaySeconds = delay // kolona se rozpustila → případnou další zase ohlásíme
+        }
+    }
+
+    /** Preview: traffic-aware times for every alternative (in parallel). */
+    private fun fetchPreviewTraffic(preview: NavigationState.Preview) {
+        previewTrafficJob?.cancel()
+        val provider = traffic() ?: return
+        previewTrafficJob = scope.launch {
+            val results = preview.routes.map { route ->
+                async {
+                    try {
+                        provider.traffic(route, 0.0)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        null
+                    }
+                }
+            }.awaitAll()
+            val current = _state.value as? NavigationState.Preview ?: return@launch
+            if (current.routes.map { it.id } != preview.routes.map { it.id } || current.destination != preview.destination) return@launch
+            _state.value = current.copy(routes = current.routes.mapIndexed { i, r -> results[i]?.let { r.copy(traffic = it) } ?: r })
+        }
     }
 
     private fun reroute(nav: NavigationState.Navigating, fix: LocationFix) {
@@ -237,7 +337,8 @@ class NavigationSession(
                 emptyList() // limity jsou bonus – jejich výpadek nesmí shodit navigaci
             }
             if (spans.isEmpty() || generation != routeGeneration) return@launch
-            val enriched = route.copy(speedLimits = spans)
+            // Z trackeru – aby se nepřepsala mezitím stažená doprava.
+            val enriched = (tracker?.route ?: route).copy(speedLimits = spans)
             tracker?.replaceRouteData(enriched)
             val current = _state.value as? NavigationState.Navigating ?: return@launch
             _state.value = current.copy(
@@ -249,10 +350,17 @@ class NavigationSession(
 
     private fun arrive(destination: Place) {
         enrichJob?.cancel()
+        trafficJob?.cancel()
         tracker = null
         planner = null
         _state.value = NavigationState.Arrived(destination)
         _events.tryEmit(NavigationEvent.Arrived)
+    }
+
+    private fun minutesWord(n: Int) = when (n) {
+        1 -> "minuta"
+        in 2..4 -> "minuty"
+        else -> "minut"
     }
 
     private fun speak(text: String) {
@@ -266,6 +374,11 @@ class NavigationSession(
         RoutingException.Kind.NETWORK -> FailureReason.NETWORK
         RoutingException.Kind.NO_ROUTE -> FailureReason.NO_ROUTE
         RoutingException.Kind.SERVER -> FailureReason.SERVER
+    }
+
+    private companion object {
+        const val TRAFFIC_ANNOUNCE_MIN_S = 300.0
+        const val TRAFFIC_ANNOUNCE_STEP_S = 180.0
     }
 
     private fun RoutingException.Kind.toMessage() = when (this) {

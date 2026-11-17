@@ -48,6 +48,12 @@ data class TrackerConfig(
     val arrivalDistanceM: Double = 30.0,
     /** Speeds below this are too noisy for heading-based logic. */
     val minSpeedForHeadingMps: Double = 3.0,
+    /** Below this speed the car is considered standing (position frozen against GPS drift). */
+    val stationarySpeedMps: Double = 1.0,
+    /** Backward correction needs the projection to be at least this far behind… */
+    val backCorrectionMinM: Double = 8.0,
+    /** …for this many consecutive fixes. */
+    val backCorrectionStrikes: Int = 3,
 )
 
 /**
@@ -60,7 +66,8 @@ data class TrackerConfig(
  *  - **Heading-aware scoring**: distance + penalty for heading mismatch, so on a dual
  *    carriageway we match the lane going our direction.
  *  - **Hysteresis**: off-route needs several consecutive bad fixes.
- *  - **Monotonic progress**: GPS jitter can't make us go "backwards" along the route.
+ *  - **Stable progress**: frozen at standstill, forward immediately, backward only when
+ *    several fixes agree (see [advanceAlong]).
  */
 class RouteProgressTracker(
     route: Route,
@@ -72,6 +79,7 @@ class RouteProgressTracker(
     private var distanceAlong = 0.0
     private var offRouteCount = 0
     private var wrongWayCount = 0
+    private var behindCount = 0
     private var arrived = false
 
     fun update(fix: LocationFix): TrackingResult {
@@ -99,9 +107,7 @@ class RouteProgressTracker(
             abs(Geo.bearingDelta(best.segmentBearing, heading)) > config.wrongWayAngleDeg
         wrongWayCount = if (wrongWay) wrongWayCount + 1 else 0
 
-        if (onRouteGeometrically && best.distanceAlong > distanceAlong) {
-            distanceAlong = best.distanceAlong
-        }
+        if (onRouteGeometrically) advanceAlong(best.distanceAlong, fix)
 
         val progress = buildProgress(best, fix.point, onRouteGeometrically)
         val isOffRoute = offRouteCount >= config.offRouteStrikes ||
@@ -117,6 +123,36 @@ class RouteProgressTracker(
             else -> TrackingStatus.ON_ROUTE
         }
         return TrackingResult(progress, status)
+    }
+
+    /**
+     * Moves the along-route position. Rules (they're what keeps the arrow exactly where the car is
+     * at a red light):
+     *  - **standing still → freeze**: GPS wanders several metres at standstill; following it would
+     *    creep the arrow into the junction,
+     *  - forward movement is taken immediately,
+     *  - backward correction only when several fixes in a row say we're clearly behind
+     *    (the arrow overshot while braking).
+     */
+    private fun advanceAlong(projected: Double, fix: LocationFix) {
+        val speed = fix.speedMps
+        val stationary = speed != null && speed < config.stationarySpeedMps
+        val delta = projected - distanceAlong
+        when {
+            stationary -> behindCount = 0
+            delta >= 0 -> {
+                distanceAlong = projected
+                behindCount = 0
+            }
+            -delta > maxOf(config.backCorrectionMinM, fix.accuracyM ?: 0.0) && -delta <= config.lookBehindM -> {
+                behindCount++
+                if (behindCount >= config.backCorrectionStrikes) {
+                    distanceAlong = projected
+                    behindCount = 0
+                }
+            }
+            else -> behindCount = 0
+        }
     }
 
     /** Swap in enriched data (e.g. speed limits) for the same geometry without losing progress. */

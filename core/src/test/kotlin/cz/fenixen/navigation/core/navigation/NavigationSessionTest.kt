@@ -6,7 +6,11 @@ import cz.fenixen.navigation.core.model.LocationFix
 import cz.fenixen.navigation.core.model.Place
 import cz.fenixen.navigation.core.model.Route
 import cz.fenixen.navigation.core.model.RouteRequest
+import cz.fenixen.navigation.core.model.RouteTraffic
 import cz.fenixen.navigation.core.model.SpeedLimitSpan
+import cz.fenixen.navigation.core.model.TrafficLevel
+import cz.fenixen.navigation.core.model.TrafficSpan
+import cz.fenixen.navigation.core.traffic.TrafficProvider
 import cz.fenixen.navigation.core.routing.RoutingException
 import cz.fenixen.navigation.core.routing.RoutingProvider
 import cz.fenixen.navigation.core.simulation.RouteSimulator
@@ -15,7 +19,9 @@ import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -146,6 +152,43 @@ class NavigationSessionTest {
         assertEquals(50, assertNotNull(after.progress).speedLimitKph)
         assertTrue(after.isSpeeding)
         assertTrue(events.any { it is NavigationEvent.SpeedLimitExceeded && it.limitKph == 50 })
+    }
+
+    private class FakeTraffic(var delay: Double) : TrafficProvider {
+        val calls = mutableListOf<Double>()
+        override suspend fun traffic(route: Route, fromDistance: Double): RouteTraffic {
+            calls += fromDistance
+            val spans = listOf(TrafficSpan(fromDistance + 1_000, fromDistance + 3_000, TrafficLevel.JAM, delay))
+            return RouteTraffic(fromDistance, route.durationSeconds * 0.8 + delay, delay, spans, 0)
+        }
+    }
+
+    @Test
+    fun `traffic colours the route, corrects ETA, refreshes and announces big delays`() = runTest {
+        val router = FakeRouter(listOf(highway))
+        val traffic = FakeTraffic(delay = 60.0)
+        val session = NavigationSession(router, this, clock = { testScheduler.currentTime }, traffic = { traffic }, trafficRefreshMs = 180_000)
+        val events = collectEvents(session)
+        session.onLocation(startFix(highway).copy(speedMps = 0.0))
+        session.planRoute(destination)
+        runCurrent()
+        val preview = assertIs<NavigationState.Preview>(session.state.value)
+        assertEquals(60.0, preview.routes.first().traffic?.delaySeconds, "preview shows traffic")
+
+        session.startNavigation()
+        runCurrent()
+        session.onLocation(startFix(highway).copy(speedMps = 0.0))
+        val nav = assertIs<NavigationState.Navigating>(session.state.value)
+        assertEquals(1, nav.route.traffic?.spans?.size)
+        // Doprava: 0,8 × router + 60 s zdržení → ETA kratší než surový odhad routeru.
+        assertEquals(highway.durationSeconds * 0.8 + 60, nav.progress!!.durationRemaining, 30.0)
+
+        traffic.delay = 900.0
+        advanceTimeBy(180_001)
+        runCurrent()
+        assertEquals(3, traffic.calls.size, "preview + navigation start + refresh after 3 minutes")
+        assertTrue(events.any { it is NavigationEvent.Speak && it.text.contains("zdržení asi 15 minut") })
+        session.stop()
     }
 
     @Test

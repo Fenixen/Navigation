@@ -79,7 +79,13 @@ class MainActivity : ComponentActivity() {
                 MapTheme.NIGHT -> true
             }
             NavTheme(dark = dark) {
-                NavigationApp(vm, dark, hasLocationPermission, onRequestPermission = ::requestPermissions)
+                NavigationApp(
+                    vm = vm,
+                    dark = dark,
+                    hasLocationPermission = hasLocationPermission,
+                    onRequestPermission = ::requestPermissions,
+                    onMoveToBackground = { moveTaskToBack(true) },
+                )
             }
         }
     }

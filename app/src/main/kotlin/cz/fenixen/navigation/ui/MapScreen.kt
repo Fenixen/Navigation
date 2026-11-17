@@ -1,22 +1,28 @@
 package cz.fenixen.navigation.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -26,30 +32,46 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import cz.fenixen.navigation.R
+import cz.fenixen.navigation.core.navigation.CameraState
+import cz.fenixen.navigation.core.navigation.FollowMode
 import cz.fenixen.navigation.core.navigation.NavigationState
+import cz.fenixen.navigation.data.AppSettings
+import cz.fenixen.navigation.data.SavedPlaces
 import cz.fenixen.navigation.map.MapViewport
 import cz.fenixen.navigation.map.NavMapController
 import cz.fenixen.navigation.ui.components.ArrivedSheet
 import cz.fenixen.navigation.ui.components.FailedSheet
-import cz.fenixen.navigation.ui.components.ManeuverBanner
+import cz.fenixen.navigation.ui.components.GlassPanel
+import cz.fenixen.navigation.ui.components.ManeuverCard
 import cz.fenixen.navigation.ui.components.MapControls
 import cz.fenixen.navigation.ui.components.NavMap
 import cz.fenixen.navigation.ui.components.PlanningSheet
+import cz.fenixen.navigation.ui.components.PrimaryButton
 import cz.fenixen.navigation.ui.components.QuickPlaces
+import cz.fenixen.navigation.ui.components.RecenterPill
 import cz.fenixen.navigation.ui.components.RoutePreviewSheet
 import cz.fenixen.navigation.ui.components.SearchBar
 import cz.fenixen.navigation.ui.components.SearchOverlay
-import cz.fenixen.navigation.ui.components.SpeedIndicator
-import cz.fenixen.navigation.ui.components.TripBar
+import cz.fenixen.navigation.ui.components.SpeedGauge
+import cz.fenixen.navigation.ui.components.TripDock
 
 @Composable
-fun NavigationApp(vm: MainViewModel, dark: Boolean, hasLocationPermission: Boolean, onRequestPermission: () -> Unit) {
+fun NavigationApp(
+    vm: MainViewModel,
+    dark: Boolean,
+    hasLocationPermission: Boolean,
+    onRequestPermission: () -> Unit,
+    onMoveToBackground: () -> Unit,
+) {
     val state by vm.navState.collectAsStateWithLifecycle()
     val screen by vm.screen.collectAsStateWithLifecycle()
     val settings by vm.settings.collectAsStateWithLifecycle()
@@ -60,101 +82,28 @@ fun NavigationApp(vm: MainViewModel, dark: Boolean, hasLocationPermission: Boole
     val search by vm.search.collectAsStateWithLifecycle()
 
     var controller by remember { mutableStateOf<NavMapController?>(null) }
-    var topPx by remember { mutableIntStateOf(0) }
-    var bottomPx by remember { mutableIntStateOf(0) }
-    val density = LocalDensity.current
+    var viewport by remember { mutableStateOf(MapViewport()) }
 
-    BackHandler(enabled = screen != Screen.MAP || state !is NavigationState.Idle) { vm.back() }
+    BackHandler {
+        // Nejdřív zavírá vrstvy (hledání, náhled…); jinak appku jen schová – navigace běží dál.
+        if (!vm.back()) onMoveToBackground()
+    }
 
-    Box(Modifier.fillMaxSize()) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        // Na šířku / rozložený Fold: HUD ve sloupci vlevo, auto vycentrované ve zbytku mapy.
+        val wide = maxWidth > maxHeight && maxWidth >= 600.dp
         NavMap(
             dark = dark,
-            viewport = MapViewport(top = topPx, bottom = bottomPx),
-            attributionBottomPx = bottomPx,
+            viewport = viewport,
+            attributionBottomPx = viewport.bottom,
             modifier = Modifier.fillMaxSize(),
             onController = { controller = it },
         )
-
-        // ---------- horní část
-        Column(
-            Modifier
-                .align(Alignment.TopCenter)
-                .statusBarsPadding()
-                .padding(horizontal = 12.dp, vertical = 8.dp)
-                .onSizeChanged { topPx = it.height + with(density) { 40.dp.roundToPx() } },
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            when (val s = state) {
-                is NavigationState.Navigating -> ManeuverBanner(s, dark)
-                is NavigationState.Idle, is NavigationState.Failed -> {
-                    SearchBar(onClick = vm::openSearch, onSettings = vm::openSettings)
-                    Spacer(Modifier.height(10.dp))
-                    QuickPlaces(places, onPlace = vm::navigateTo, modifier = Modifier.fillMaxWidth())
-                    if (!hasLocationPermission) {
-                        Spacer(Modifier.height(10.dp))
-                        PermissionCard(onRequestPermission)
-                    }
-                }
-                else -> Unit
-            }
-        }
-
-        // ---------- spodní část
-        Column(
-            Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .onSizeChanged { bottomPx = it.height },
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            val navigating = state as? NavigationState.Navigating
-            Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                if (navigating != null || (fix?.speedMps ?: 0.0) > 1.0) {
-                    SpeedIndicator(
-                        speedMps = fix?.speedMps,
-                        limitKph = navigating?.progress?.speedLimitKph,
-                        speeding = navigating?.isSpeeding == true,
-                        modifier = Modifier.align(Alignment.BottomStart),
-                    )
-                }
-                MapControls(
-                    camera = camera,
-                    onZoomIn = { controller?.zoomIn() },
-                    onZoomOut = { controller?.zoomOut() },
-                    onAutoZoom = { controller?.enableAutoZoom() },
-                    onLockCurrent = { controller?.lockCurrentZoom() },
-                    onLockMax = { controller?.lockMaxZoom() },
-                    onRecenter = { controller?.recenter() },
-                    onToggleOrientation = {
-                        controller?.toggleOrientation()
-                        vm.setOrientationFromCamera()
-                    },
-                    modifier = Modifier.align(Alignment.BottomEnd),
-                )
-            }
-            when (val s = state) {
-                is NavigationState.Navigating -> TripBar(
-                    state = s,
-                    voiceEnabled = settings.voiceEnabled,
-                    onStop = vm::stopNavigation,
-                    onOverview = { controller?.showOverview() },
-                    onToggleVoice = vm::toggleVoice,
-                    modifier = Modifier.navigationBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp),
-                )
-                is NavigationState.Preview -> RoutePreviewSheet(
-                    state = s,
-                    settings = settings,
-                    onSelect = vm::selectRoute,
-                    onStart = vm::startNavigation,
-                    onCancel = vm::stopNavigation,
-                    onAvoidTolls = { vm.setAvoidance(tolls = it) },
-                    onAvoidHighways = { vm.setAvoidance(highways = it) },
-                )
-                is NavigationState.Planning -> PlanningSheet(s.destination, onCancel = vm::stopNavigation)
-                is NavigationState.Failed -> FailedSheet(s, onRetry = vm::retry, onCancel = vm::stopNavigation)
-                is NavigationState.Arrived -> ArrivedSheet(s.destination, onDone = vm::stopNavigation)
-                NavigationState.Idle -> Spacer(Modifier.windowInsetsPadding(WindowInsets.safeDrawing).height(0.dp))
-            }
+        val hud = HudCallbacks(vm, { controller }, onRequestPermission)
+        if (wide) {
+            WideHud(state, settings, camera, fix?.speedMps, places, hasLocationPermission, hud) { viewport = it }
+        } else {
+            PortraitHud(state, settings, camera, fix?.speedMps, places, hasLocationPermission, hud) { viewport = it }
         }
 
         when (screen) {
@@ -183,13 +132,159 @@ fun NavigationApp(vm: MainViewModel, dark: Boolean, hasLocationPermission: Boole
     }
 }
 
+/** Bundles the actions so both layouts stay small. */
+private class HudCallbacks(val vm: MainViewModel, val controller: () -> NavMapController?, val requestPermission: () -> Unit)
+
 @Composable
-private fun PermissionCard(onRequest: () -> Unit) {
-    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.errorContainer) {
-        Column(Modifier.padding(16.dp)) {
-            Text(stringResource(R.string.location_needed), style = MaterialTheme.typography.bodyLarge)
-            Spacer(Modifier.height(8.dp))
-            Button(onClick = onRequest) { Text(stringResource(R.string.grant)) }
+private fun PortraitHud(
+    state: NavigationState,
+    settings: AppSettings,
+    camera: CameraState,
+    speedMps: Double?,
+    places: SavedPlaces,
+    hasPermission: Boolean,
+    hud: HudCallbacks,
+    onViewport: (MapViewport) -> Unit,
+) {
+    val density = LocalDensity.current
+    var topPx by remember { mutableIntStateOf(0) }
+    var bottomPx by remember { mutableIntStateOf(0) }
+    val margin = with(density) { 24.dp.roundToPx() }
+    LaunchedEffect(topPx, bottomPx) { onViewport(MapViewport(top = topPx + margin, bottom = bottomPx + margin)) }
+
+    Box(Modifier.fillMaxSize()) {
+        Column(
+            Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp)
+                .onGloballyPositioned { topPx = it.size.height + it.positionInRoot().y.toInt() },
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) { TopContent(state, places, hasPermission, hud) }
+
+        Column(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().onSizeChanged { bottomPx = it.height },
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                SpeedArea(state, speedMps, Modifier.align(Alignment.BottomStart))
+                FollowArea(camera, hud, Modifier.align(Alignment.BottomCenter))
+                Controls(camera, hud, Modifier.align(Alignment.BottomEnd))
+            }
+            BottomContent(state, settings, hud, Modifier.navigationBarsPadding().padding(horizontal = 10.dp, vertical = 8.dp))
         }
+    }
+}
+
+@Composable
+private fun WideHud(
+    state: NavigationState,
+    settings: AppSettings,
+    camera: CameraState,
+    speedMps: Double?,
+    places: SavedPlaces,
+    hasPermission: Boolean,
+    hud: HudCallbacks,
+    onViewport: (MapViewport) -> Unit,
+) {
+    val density = LocalDensity.current
+    val panel = 400.dp
+    val left = with(density) { (panel + 28.dp).roundToPx() }
+    val edge = with(density) { 24.dp.roundToPx() }
+    LaunchedEffect(left, edge) { onViewport(MapViewport(left = left, top = edge, bottom = edge, right = edge)) }
+
+    Box(Modifier.fillMaxSize().safeDrawingPadding().padding(12.dp)) {
+        Column(Modifier.width(panel).fillMaxHeight()) {
+            TopContent(state, places, hasPermission, hud)
+            Spacer(Modifier.weight(1f))
+            SpeedArea(state, speedMps, Modifier)
+            Spacer(Modifier.height(8.dp))
+            BottomContent(state, settings, hud, Modifier)
+        }
+        FollowArea(camera, hud, Modifier.align(Alignment.BottomCenter).padding(start = panel))
+        Controls(camera, hud, Modifier.align(Alignment.BottomEnd))
+    }
+}
+
+@Composable
+private fun TopContent(state: NavigationState, places: SavedPlaces, hasPermission: Boolean, hud: HudCallbacks) {
+    when (state) {
+        is NavigationState.Navigating -> ManeuverCard(state)
+        is NavigationState.Idle, is NavigationState.Failed -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            SearchBar(onClick = hud.vm::openSearch, onSettings = hud.vm::openSettings)
+            Spacer(Modifier.height(10.dp))
+            QuickPlaces(places, onPlace = hud.vm::navigateTo, modifier = Modifier.fillMaxWidth())
+            if (!hasPermission) {
+                Spacer(Modifier.height(10.dp))
+                GlassPanel(shape = RoundedCornerShape(24.dp)) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text(stringResource(R.string.location_needed), style = MaterialTheme.typography.bodyLarge)
+                        Spacer(Modifier.height(10.dp))
+                        PrimaryButton(stringResource(R.string.grant), null, hud.requestPermission, Modifier.fillMaxWidth())
+                    }
+                }
+            }
+        }
+        else -> Unit
+    }
+}
+
+@Composable
+private fun SpeedArea(state: NavigationState, speedMps: Double?, modifier: Modifier) {
+    val navigating = state as? NavigationState.Navigating
+    AnimatedVisibility(navigating != null || (speedMps ?: 0.0) > 1.0, modifier, enter = fadeIn() + scaleIn(), exit = fadeOut() + scaleOut()) {
+        SpeedGauge(speedMps, navigating?.progress?.speedLimitKph, navigating?.isSpeeding == true)
+    }
+}
+
+@Composable
+private fun FollowArea(camera: CameraState, hud: HudCallbacks, modifier: Modifier) {
+    AnimatedVisibility(
+        camera.followMode != FollowMode.FOLLOW,
+        modifier,
+        enter = slideInVertically { it } + fadeIn(),
+        exit = slideOutVertically { it } + fadeOut(),
+    ) { RecenterPill(onClick = { hud.controller()?.recenter() }) }
+}
+
+@Composable
+private fun Controls(camera: CameraState, hud: HudCallbacks, modifier: Modifier) {
+    MapControls(
+        camera = camera,
+        onZoomIn = { hud.controller()?.zoomIn() },
+        onZoomOut = { hud.controller()?.zoomOut() },
+        onAutoZoom = { hud.controller()?.enableAutoZoom() },
+        onLockCurrent = { hud.controller()?.lockCurrentZoom() },
+        onLockMax = { hud.controller()?.lockMaxZoom() },
+        onToggleOrientation = {
+            hud.controller()?.toggleOrientation()
+            hud.vm.setOrientationFromCamera()
+        },
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun BottomContent(state: NavigationState, settings: AppSettings, hud: HudCallbacks, modifier: Modifier) {
+    val vm = hud.vm
+    when (state) {
+        is NavigationState.Navigating -> TripDock(
+            state = state,
+            voiceEnabled = settings.voiceEnabled,
+            onStop = vm::stopNavigation,
+            onOverview = { hud.controller()?.showOverview() },
+            onToggleVoice = vm::toggleVoice,
+            modifier = modifier,
+        )
+        is NavigationState.Preview -> RoutePreviewSheet(
+            state = state,
+            settings = settings,
+            onSelect = vm::selectRoute,
+            onStart = vm::startNavigation,
+            onCancel = vm::stopNavigation,
+            onAvoidTolls = { vm.setAvoidance(tolls = it) },
+            onAvoidHighways = { vm.setAvoidance(highways = it) },
+        )
+        is NavigationState.Planning -> PlanningSheet(state.destination, onCancel = vm::stopNavigation)
+        is NavigationState.Failed -> FailedSheet(state, onRetry = vm::retry, onCancel = vm::stopNavigation)
+        is NavigationState.Arrived -> ArrivedSheet(state.destination, onDone = vm::stopNavigation)
+        NavigationState.Idle -> Spacer(Modifier.navigationBarsPadding())
     }
 }

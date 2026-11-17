@@ -90,6 +90,8 @@ data class Route(
     val hasHighway: Boolean = false,
     val hasFerry: Boolean = false,
     val speedLimits: List<SpeedLimitSpan> = emptyList(),
+    /** Live traffic for (the remaining part of) this route – null without a traffic provider. */
+    val traffic: RouteTraffic? = null,
 ) {
     init {
         require(maneuvers.isNotEmpty()) { "Route must contain at least one maneuver" }
@@ -128,4 +130,26 @@ data class RouteRequest(
     /** Current heading – lets the router prefer continuing forward (important when rerouting). */
     val originBearing: Double? = null,
     val options: RouteOptions = RouteOptions(),
+)
+
+enum class TrafficLevel { FREE, SLOW, QUEUE, JAM, CLOSED }
+
+/** Traffic condition on [startDistance, endDistance) along the route (metres from route start). */
+data class TrafficSpan(
+    val startDistance: Double,
+    val endDistance: Double,
+    val level: TrafficLevel,
+    val delaySeconds: Double = 0.0,
+    val speedKmh: Int? = null,
+)
+
+data class RouteTraffic(
+    /** Along-route distance from which the numbers below are valid (current position at fetch time). */
+    val fromDistance: Double,
+    /** Travel time from [fromDistance] to the destination *with* current traffic, seconds. */
+    val travelTimeSeconds: Double,
+    /** Extra time caused by traffic, seconds. */
+    val delaySeconds: Double,
+    val spans: List<TrafficSpan>,
+    val fetchedAtMillis: Long,
 )

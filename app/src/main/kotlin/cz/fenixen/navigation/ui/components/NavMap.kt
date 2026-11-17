@@ -41,7 +41,7 @@ fun NavMap(
 
     val mapView = remember { MapView(context).apply { onCreate(null) } }
     val controller = remember {
-        NavMapController(context, mapView, graph.phoneCamera, graph.session, scope, darkFlow).also {
+        NavMapController(context, mapView, graph.phoneCamera, graph.session, scope, darkFlow, graph.trafficTilesKey).also {
             it.start()
             onController(it)
         }
@@ -70,6 +70,7 @@ fun NavMap(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
+            controller.release()
             mapView.onDestroy()
         }
     }

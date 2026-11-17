@@ -4,7 +4,7 @@
 Hlavní důvod existence: **zoom, který si nastavíš, platí napořád.** Žádné automatické oddalování,
 žádné „po 5 sekundách zpátky“. Když dáš max zoom, zůstane max zoom.
 
-| Navigace ve městě | Dálnice v noci | Náhled tras | Výchozí obrazovka |
+| Navigace ve městě | Dálnice v noci + doprava | Náhled tras | Výchozí obrazovka |
 |---|---|---|---|
 | ![](docs/screenshots/1_navigace_mesto_den.png) | ![](docs/screenshots/2_navigace_dalnice_noc.png) | ![](docs/screenshots/3_nahled_trasy.png) | ![](docs/screenshots/4_vychozi_obrazovka.png) |
 
@@ -20,8 +20,11 @@ Hlavní důvod existence: **zoom, který si nastavíš, platí napořád.** Žá
 | Navádění | Velký banner (vzdálenost, ulice, výjezd + směr), „Potom…“ u rychle navazujících manévrů, kruhové objezdy s číslem výjezdu |
 | Hlas | Česky přes TTS, časování podle **rychlosti** (ne fixních metrů), audio focus pro navigaci (hudba se jen ztlumí) |
 | Přepočet trasy | Detekce sjetí z trasy s hysterezí (GPS glitch ≠ sjetí), detekce jízdy v protisměru, přepočet s ohledem na směr jízdy |
-| Rychlost | Aktuální rychlost + česká značka limitu (data OSM), červené zvýraznění při překročení |
-| ETA | Čas příjezdu, zbývající čas a vzdálenost (z časů routeru, ne „vzdálenost / rychlost“) |
+| Rychlost | Tachometr s prstencem k limitu + česká značka limitu (data OSM), červený při překročení |
+| **Živá doprava** | TomTom: kolony obarvené přímo na trase, provoz na mapě, čas s dopravou v náhledu, hlášení „zdržení asi 15 minut“ |
+| **ETA** | Časy routeru × doprava × naučené tempo jízdy (viz níže) – už ne nadsazené |
+| Poloha | Vlastní ukazatel (oranžový pickup), plynulá animace 60+ fps, auto ve **spodní třetině** obrazovky, ve stoji se nehýbe |
+| Vzhled | „Telemetrický“ HUD: tmavé skleněné panely, papaya akcent, zúžené číslice, vlastní styl mapy s 3D budovami, zářící trasa, šipka manévru přímo v křižovatce |
 | Vyhledávání | Photon (autocomplete), Domů / Práce / Nedávné, „Navigovat sem“ z jiných aplikací (`geo:` URI) |
 | Android Auto | Vlastní mapa na ploše auta, šablony navigace / náhledu / vyhledávání / oblíbených, údaje pro přístrojový štít (cluster/HUD), „Ok Google, naviguj do…“ |
 | Ostatní | Den/noc, mapa po směru jízdy / sever nahoře, foreground služba s notifikací, **simulace jízdy** pro testování |
@@ -41,6 +44,26 @@ jen tlačítko AUTO               ─▶ Auto (zoom podle rychlosti + přiblíž
 
 Kamera je jen **stavový automat**, který vydává příkazy (`Follow`, `Fit`, `ZoomTo`). MapLibre adaptér je jen
 vykonává. Díky tomu stejná logika řídí telefon i Android Auto a dá se testovat bez emulátoru.
+
+## Živá doprava (TomTom)
+
+Valhalla dopravu nezná, proto se k ní přidává TomTom v režimu *route reconstruction*: pošle se mu naše trasa
+a vrátí aktuální čas jízdy, zdržení a úseky s kolonou přesně na ní.
+
+1. Zdarma účet na [developer.tomtom.com](https://developer.tomtom.com) → *API Keys* (free tier 2 500 dotazů/den,
+   dlaždice provozu mají vlastní limit).
+2. V appce *Nastavení → Živá doprava → TomTom API klíč*.
+3. Během navigace se doprava obnovuje každé 3 minuty (≈ 20 dotazů/hod jízdy).
+
+Bez klíče appka funguje dál, jen bez dopravy.
+
+## Proč už ETA není nadsazené
+
+[`EtaEstimator`](core/src/main/kotlin/cz/fenixen/navigation/core/navigation/EtaEstimator.kt) násobí časy routeru dvěma korekcemi:
+
+- **doprava**: (čas TomTomu s provozem) / (čas Valhally) pro zbytek trasy. Opraví i celkovou „opatrnost“ Valhally,
+- **tempo**: jak dlouho ti ujetá část reálně trvala vs. předpověď. Náběh je postupný, krajní hodnoty jsou ořezané
+  a čekání před rozjezdem se nepočítá. Jako když inženýr upravuje odhad stintu podle prvních kol.
 
 ## Používám Dijkstru?
 
@@ -149,7 +172,9 @@ Poctivě, co **není** hotové:
 
 - **Ověřeno jen buildem, testy a screenshoty, ne na reálném zařízení ani v DHU.** Nejrizikovější místa:
   vykreslování mapy přes `Presentation` na ploše auta a sledování kamery v MapLibre. Otestuj nejdřív v DHU.
-- **Žádná živá doprava.** Neexistuje zdarma zdroj dopravních dat. ETA je bez kolon (TomTom / HERE API = placené).
+- **Doprava potřebuje TomTom klíč** (zdarma, ale vlastní účet). Parser odpovědi je otestovaný podle dokumentovaného
+  formátu; proti živému API kvůli chybějícímu klíči ověřený není.
+- Nové vykreslování (vlastní kamera, pickup) je ověřené buildem a screenshoty, ne na zařízení.
 - **Jízdní pruhy** (lane guidance) zatím ne. Valhalla je umí vrátit ve formátu OSRM, je to další krok.
 - **Offline:** mapy se jen cachují (MapLibre ambient cache). Vlastní CH engine potřebuje importér OSM PBF → grafu.
 - Pro český hlas musí být v telefonu nainstalovaný český TTS hlas (Google TTS → Čeština).

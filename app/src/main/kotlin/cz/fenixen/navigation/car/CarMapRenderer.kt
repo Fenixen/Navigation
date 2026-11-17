@@ -125,7 +125,7 @@ class CarMapRenderer(
 
         val s = MainScope()
         scope = s
-        controller = NavMapController(ctx, mv, graph.carCamera, graph.session, s, dark).also {
+        controller = NavMapController(ctx, mv, graph.carCamera, graph.session, s, dark, graph.trafficTilesKey).also {
             it.viewport = viewport()
             it.start()
         }
@@ -195,6 +195,7 @@ class CarMapRenderer(
     }
 
     private fun release() {
+        controller?.release()
         scope?.cancel()
         scope = null
         controller = null
@@ -212,25 +213,35 @@ class CarMapRenderer(
     }
 }
 
-/** Speed + Czech limit sign drawn with Canvas (car surface has no Compose). */
+/** Speed gauge + Czech limit sign drawn with Canvas (car surface has no Compose) – same look as the phone HUD. */
 private class CarSpeedView(context: Context) : View(context) {
     private val density = context.resources.displayMetrics.density
-    private val circle = 58 * density
-    private val gap = 8 * density
+    private val circle = 64 * density
+    private val sign = 40 * density
     private var speedKmh = 0
     private var limit: Int? = null
     private var speeding = false
     private var show = false
 
-    private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val glassPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(235, 13, 16, 22)
+        setShadowLayer(6 * density, 0f, 2 * density, Color.argb(120, 0, 0, 0))
+    }
+    private val trackPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 4.5f * density
+        strokeCap = Paint.Cap.ROUND
+        color = Color.argb(22, 255, 255, 255)
+    }
+    private val ringPaint = Paint(trackPaint).apply { color = Color.rgb(255, 128, 0) }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textAlign = Paint.Align.CENTER
-        typeface = Typeface.DEFAULT_BOLD
+        typeface = Typeface.create(Typeface.create("sans-serif-condensed", Typeface.NORMAL), 800, false)
     }
-    private val ringPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    private val signRing = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         color = Color.rgb(215, 38, 46)
-        strokeWidth = 6 * density
+        strokeWidth = 5 * density
     }
 
     fun update(speedKmh: Int, limitKph: Int?, speeding: Boolean, visible: Boolean) {
@@ -239,36 +250,40 @@ private class CarSpeedView(context: Context) : View(context) {
         this.limit = limitKph
         this.speeding = speeding
         this.show = visible
-        if (changed) {
-            requestLayout()
-            invalidate()
-        }
+        if (changed) invalidate()
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val w = if (limit != null) circle * 2 + gap else circle
-        setMeasuredDimension(w.toInt(), circle.toInt())
+        setMeasuredDimension((circle + sign * 0.6f).toInt(), (circle + sign * 0.35f).toInt())
     }
 
     override fun onDraw(canvas: Canvas) {
         if (!show) return
         val r = circle / 2
-        bgPaint.color = if (speeding) Color.rgb(229, 72, 77) else Color.WHITE
-        bgPaint.setShadowLayer(4 * density, 0f, density, Color.argb(80, 0, 0, 0))
-        canvas.drawCircle(r, r, r - 2 * density, bgPaint)
-        textPaint.color = if (speeding) Color.WHITE else Color.rgb(20, 24, 30)
-        textPaint.textSize = 22 * density
-        canvas.drawText("$speedKmh", r, r + 4 * density, textPaint)
-        textPaint.textSize = 9 * density
-        canvas.drawText("km/h", r, r + 16 * density, textPaint)
+        val cx = r
+        val cy = height - r
+        canvas.drawCircle(cx, cy, r - density, glassPaint)
+        val inset = 7 * density
+        val oval = android.graphics.RectF(cx - r + inset, cy - r + inset, cx + r - inset, cy + r - inset)
+        canvas.drawArc(oval, 135f, 270f, false, trackPaint)
+        val fraction = (speedKmh / (limit ?: 130).toFloat()).coerceIn(0f, 1.25f) / 1.25f
+        ringPaint.color = if (speeding) Color.rgb(255, 69, 58) else Color.rgb(255, 128, 0)
+        if (fraction > 0f) canvas.drawArc(oval, 135f, 270f * fraction, false, ringPaint)
+        textPaint.color = if (speeding) Color.rgb(255, 69, 58) else Color.rgb(244, 246, 249)
+        textPaint.textSize = 24 * density
+        canvas.drawText("$speedKmh", cx, cy + 6 * density, textPaint)
+        textPaint.textSize = 8 * density
+        textPaint.color = Color.rgb(154, 163, 175)
+        canvas.drawText("km/h", cx, cy + 17 * density, textPaint)
 
         val l = limit ?: return
-        val cx = circle + gap + r
-        bgPaint.color = Color.WHITE
-        canvas.drawCircle(cx, r, r - 2 * density, bgPaint)
-        canvas.drawCircle(cx, r, r - 5 * density, ringPaint)
+        val sr = sign / 2
+        val sx = width - sr - density
+        val sy = sr + density
+        canvas.drawCircle(sx, sy, sr - density, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+        canvas.drawCircle(sx, sy, sr - 3.5f * density, signRing)
         textPaint.color = Color.BLACK
-        textPaint.textSize = (if (l >= 100) 18 else 22) * density
-        canvas.drawText("$l", cx, r + 7 * density, textPaint)
+        textPaint.textSize = (if (l >= 100) 13 else 16) * density
+        canvas.drawText("$l", sx, sy + 5.5f * density, textPaint)
     }
 }

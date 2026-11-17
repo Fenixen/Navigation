@@ -54,7 +54,14 @@
     <string name="zoom_lock_car">Zámek zoomu – Android Auto</string>
     <string name="zoom_lock_off">Automatický podle rychlosti</string>
     <string name="unlock">Odemknout</string>
+    <string name="label_arrival">PŘÍJEZD</string>
+    <string name="label_remaining">ZBÝVÁ</string>
+    <string name="traffic">Živá doprava</string>
+    <string name="traffic_live">Doprava v reálném čase (TomTom)</string>
+    <string name="traffic_live_hint">Přesnější čas příjezdu, obarvení kolon na trase a hlášení zdržení. Zdarma klíč na developer.tomtom.com (2 500 dotazů denně).</string>
+    <string name="traffic_on_map">Zobrazit provoz na mapě</string>
+    <string name="tomtom_key">TomTom API klíč</string>
     <string name="osm_copyright">© OpenStreetMap</string>
-    <string name="attribution">Mapa © OpenStreetMap, OpenFreeMap · Trasy Valhalla · Hledání Photon</string>
+    <string name="attribution">Mapa © OpenStreetMap, OpenFreeMap · Trasy Valhalla · Hledání Photon · Doprava TomTom</string>
     <string name="avoid">Vyhnout se</string>
 </resources>

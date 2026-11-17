@@ -1,0 +1,41 @@
+{
+  "formatVersion": "0.0.12",
+  "routes": [
+    {
+      "summary": {
+        "lengthInMeters": 2100,
+        "travelTimeInSeconds": 480,
+        "trafficDelayInSeconds": 95,
+        "trafficLengthInMeters": 600,
+        "departureTime": "2026-11-17T08:00:00+01:00",
+        "arrivalTime": "2026-11-17T08:08:00+01:00",
+        "noTrafficTravelTimeInSeconds": 385,
+        "historicTrafficTravelTimeInSeconds": 410,
+        "liveTrafficIncidentsTravelTimeInSeconds": 480
+      },
+      "legs": [
+        {
+          "summary": { "lengthInMeters": 2100, "travelTimeInSeconds": 480, "trafficDelayInSeconds": 95 },
+          "points": [
+            { "latitude": 49.191003, "longitude": 16.612352 },
+            { "latitude": 49.193000, "longitude": 16.612352 },
+            { "latitude": 49.195000, "longitude": 16.612352 },
+            { "latitude": 49.197000, "longitude": 16.612352 },
+            { "latitude": 49.199000, "longitude": 16.612352 },
+            { "latitude": 49.201000, "longitude": 16.612352 },
+            { "latitude": 49.203000, "longitude": 16.612352 },
+            { "latitude": 49.205000, "longitude": 16.612352 },
+            { "latitude": 49.207000, "longitude": 16.612352 },
+            { "latitude": 49.209000, "longitude": 16.612352 },
+            { "latitude": 49.209900, "longitude": 16.612352 }
+          ]
+        }
+      ],
+      "sections": [
+        { "startPointIndex": 0, "endPointIndex": 10, "sectionType": "TRAVEL_MODE", "travelMode": "car" },
+        { "startPointIndex": 2, "endPointIndex": 4, "sectionType": "TRAFFIC", "simpleCategory": "JAM", "effectiveSpeedInKmh": 12, "delayInSeconds": 80, "magnitudeOfDelay": 3, "tec": { "causes": [ { "mainCauseCode": 1 } ], "effectCode": 4 } },
+        { "startPointIndex": 6, "endPointIndex": 7, "sectionType": "TRAFFIC", "simpleCategory": "ROAD_WORK", "effectiveSpeedInKmh": 30, "delayInSeconds": 15, "magnitudeOfDelay": 1 }
+      ]
+    }
+  ]
+}

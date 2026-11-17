@@ -99,8 +99,15 @@ internal object CarModels {
         val arrival = System.currentTimeMillis() + (p.durationRemaining * 1000).toLong()
         return TravelEstimate.Builder(distance(p.distanceRemaining), DateTimeWithZone.create(arrival, TimeZone.getDefault()))
             .setRemainingTimeSeconds(p.durationRemaining.toLong())
-            .setRemainingTimeColor(CarColor.GREEN)
+            .setRemainingTimeColor(delayColor(state.route.traffic?.delaySeconds))
             .build()
+    }
+
+    /** Green = free road, yellow = some delay, red = serious jam (live traffic). */
+    private fun delayColor(delaySeconds: Double?): CarColor = when {
+        delaySeconds == null || delaySeconds < 60 -> CarColor.GREEN
+        delaySeconds < 600 -> CarColor.YELLOW
+        else -> CarColor.RED
     }
 
     /** Trip for the instrument cluster / HUD (NavigationManager.updateTrip). */

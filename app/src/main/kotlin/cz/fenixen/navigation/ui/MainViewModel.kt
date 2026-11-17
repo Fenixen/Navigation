@@ -154,6 +154,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setRoutingUrl(url: String) = graph.settings.setRoutingUrl(url)
     fun setGeocoderUrl(url: String) = graph.settings.setGeocoderUrl(url)
     fun setSimulateDriving(v: Boolean) = graph.settings.setSimulateDriving(v)
+    fun setTrafficEnabled(v: Boolean) = graph.settings.setTrafficEnabled(v)
+    fun setTrafficOnMap(v: Boolean) = graph.settings.setTrafficOnMap(v)
+    fun setTomTomKey(v: String) = graph.settings.setTomTomKey(v)
 
     /** "Navigate here" from another app (geo: URI). */
     fun handleGeoUri(uri: String) {

@@ -63,7 +63,8 @@ class RouteProgressTrackerTest {
             )
             val r = tracker.update(noisy)
             assertTrue(r.status != TrackingStatus.OFF_ROUTE, "noise caused off-route at ${r.progress.distanceAlong}")
-            assertTrue(r.progress.distanceAlong >= lastAlong)
+            // Malé zpětné korekce (přejetí při brzdění) jsou povolené, skoky ne.
+            assertTrue(r.progress.distanceAlong >= lastAlong - 31.0, "jumped back from $lastAlong to ${r.progress.distanceAlong}")
             lastAlong = r.progress.distanceAlong
         }
     }
@@ -93,6 +94,38 @@ class RouteProgressTrackerTest {
         val reversed = fixes.subList(90, 100).reversed().map { it.copy(bearingDeg = (it.bearingDeg!! + 180) % 360) }
         val statuses = reversed.map { tracker.update(it).status }
         assertTrue(TrackingStatus.OFF_ROUTE in statuses)
+    }
+
+    @Test
+    fun `standing at a junction keeps the arrow still despite gps drift`() {
+        val tracker = RouteProgressTracker(route)
+        val fixes = drive()
+        fixes.take(60).forEach { tracker.update(it) }
+        val stop = fixes[60]
+        val before = tracker.update(stop.copy(speedMps = 0.0)).progress.distanceAlong
+        val rnd = Random(1)
+        repeat(60) {
+            // GPS u stojícího auta „bloudí“ až 15 m, i směrem dopředu po trase.
+            val drift = stop.copy(
+                point = Geo.destination(stop.point, stop.bearingDeg!! + rnd.nextDouble(-30.0, 30.0), rnd.nextDouble(0.0, 15.0)),
+                speedMps = rnd.nextDouble(0.0, 0.6),
+            )
+            assertEquals(before, tracker.update(drift).progress.distanceAlong, 1e-9, "arrow moved while standing")
+        }
+    }
+
+    @Test
+    fun `overshoot while braking is corrected after consistent fixes`() {
+        val tracker = RouteProgressTracker(route)
+        val fixes = drive(every = 1.0)
+        fixes.take(120).forEach { tracker.update(it) }
+        val ahead = tracker.update(fixes[120]).progress.distanceAlong
+        // Skutečná poloha je 20 m zpět (pomalá jízda, auto „předběhlo“ realitu).
+        val back = route.geometry.pointAt(ahead - 20)
+        val slow = fixes[120].copy(point = back, speedMps = 2.0, accuracyM = 5.0)
+        val results = (1..3).map { tracker.update(slow).progress.distanceAlong }
+        assertEquals(ahead, results[0], 1e-9)
+        assertEquals(ahead - 20, results[2], 1.0)
     }
 
     @Test

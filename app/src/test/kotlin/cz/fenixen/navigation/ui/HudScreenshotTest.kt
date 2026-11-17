@@ -2,28 +2,35 @@ package cz.fenixen.navigation.ui
 
 import android.app.Application
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.unit.dp
@@ -35,6 +42,7 @@ import cz.fenixen.navigation.core.model.ManeuverSign
 import cz.fenixen.navigation.core.model.ManeuverType
 import cz.fenixen.navigation.core.model.Place
 import cz.fenixen.navigation.core.model.Route
+import cz.fenixen.navigation.core.model.RouteTraffic
 import cz.fenixen.navigation.core.navigation.CameraState
 import cz.fenixen.navigation.core.navigation.FollowMode
 import cz.fenixen.navigation.core.navigation.NavigationState
@@ -42,14 +50,18 @@ import cz.fenixen.navigation.core.navigation.RouteProgress
 import cz.fenixen.navigation.core.navigation.ZoomPolicy
 import cz.fenixen.navigation.data.AppSettings
 import cz.fenixen.navigation.data.SavedPlaces
-import cz.fenixen.navigation.ui.components.ManeuverBanner
+import cz.fenixen.navigation.map.MapPalette
+import cz.fenixen.navigation.map.PuckBitmaps
+import cz.fenixen.navigation.ui.components.ManeuverCard
 import cz.fenixen.navigation.ui.components.ManeuverIcon
 import cz.fenixen.navigation.ui.components.MapControls
 import cz.fenixen.navigation.ui.components.QuickPlaces
+import cz.fenixen.navigation.ui.components.RecenterPill
 import cz.fenixen.navigation.ui.components.RoutePreviewSheet
 import cz.fenixen.navigation.ui.components.SearchBar
-import cz.fenixen.navigation.ui.components.SpeedIndicator
-import cz.fenixen.navigation.ui.components.TripBar
+import cz.fenixen.navigation.ui.components.SpeedGauge
+import cz.fenixen.navigation.ui.components.TripDock
+import cz.fenixen.navigation.ui.theme.Hud
 import cz.fenixen.navigation.ui.theme.NavTheme
 import org.junit.Rule
 import org.junit.Test
@@ -59,8 +71,9 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
 /**
- * Renders the real HUD composables on top of a stylised fake map (MapLibre needs a GPU,
- * which Robolectric doesn't have). Output: app/build/outputs/roborazzi/… PNGs.
+ * Renders the real HUD composables (and the real pickup bitmap) over a stylised map that uses
+ * the app's own map palette. MapLibre itself needs a GPU, which Robolectric doesn't have.
+ * Output: app/build/outputs/roborazzi/… PNGs.
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -77,57 +90,99 @@ class HudScreenshotTest {
             distanceFromStart = at, lengthMeters = len, durationSeconds = len / 12, sign = sign, roundaboutExitCount = exits,
         )
 
-    private val geometry = Polyline(listOf(GeoPoint(49.19, 16.61), GeoPoint(49.20, 16.62)))
+    private val geometry = Polyline(listOf(GeoPoint(49.19, 16.61), GeoPoint(49.30, 16.62)))
 
-    private fun navigating(upcoming: Maneuver, following: Maneuver?, toUpcoming: Double, speed: Double, limit: Int?, speeding: Boolean): NavigationState.Navigating {
-        val ms = listOfNotNull(maneuver(ManeuverType.DEPART, "Jeďte", at = 0.0, len = 100.0), upcoming, following,
-            maneuver(ManeuverType.ARRIVE, "Cíl", at = 9_000.0, len = 0.0))
-        val route = Route("r", geometry, ms, 18_400.0, 1_460.0, "D1")
+    private fun navigating(
+        previous: Maneuver,
+        upcoming: Maneuver,
+        following: Maneuver?,
+        toUpcoming: Double,
+        speed: Double,
+        limit: Int?,
+        speeding: Boolean,
+        delay: Double? = null,
+    ): NavigationState.Navigating {
+        val ms = listOfNotNull(previous, upcoming, following, maneuver(ManeuverType.ARRIVE, "Cíl", at = 12_000.0, len = 0.0))
+        val traffic = delay?.let { RouteTraffic(0.0, 1_460.0, it, emptyList(), 1) }
+        val route = Route("r", geometry, ms, 18_400.0, 1_460.0, "D1", traffic = traffic)
         val progress = RouteProgress(
-            distanceAlong = 1_000.0, distanceRemaining = 18_400.0, durationRemaining = 1_460.0, upcomingManeuverIndex = 1,
+            distanceAlong = 4_200.0, distanceRemaining = 14_200.0, durationRemaining = 1_260.0, upcomingManeuverIndex = 1,
             distanceToUpcoming = toUpcoming, durationToUpcoming = 20.0, snappedPoint = geometry.points[0], snappedBearing = 0.0,
             distanceFromRoute = 0.0, speedLimitKph = limit,
         )
         return NavigationState.Navigating(Place("Hlavní nádraží", GeoPoint(49.19, 16.61)), route, progress, speed / 3.6, speeding)
     }
 
+    /** Stylised map in the app's palette: blocks, roads, motorway, glowing route, jam, maneuver arrow, pickup. */
     @Composable
-    private fun FakeMap(dark: Boolean) {
-        val land = if (dark) Color(0xFF1C2128) else Color(0xFFEDEAE3)
-        val road = if (dark) Color(0xFF3A414C) else Color.White
-        Canvas(Modifier.fillMaxSize().background(land)) {
-            // Ulice v mřížce + projetá (šedá) a zbývající (modrá) část trasy – jen ilustrace mapy.
-            for (i in 0..12) {
-                val x = size.width * i / 8f - 60f
-                drawLine(road, Offset(x, 0f), Offset(x + 220f, size.height), strokeWidth = if (i % 4 == 0) 34f else 18f)
-                val y = size.height * i / 10f
-                drawLine(road, Offset(0f, y), Offset(size.width, y - 160f), strokeWidth = if (i % 3 == 0) 30f else 16f)
+    private fun FakeMap(dark: Boolean, carAt: Float = 0.70f, jam: Boolean = false) {
+        val p = if (dark) MapPalette.NIGHT else MapPalette.DAY
+        val bg = Color(p.background)
+        val road = Color(p.minorRoad)
+        val major = Color(p.majorRoad)
+        val motorway = Color(p.motorway)
+        val water = Color(p.water)
+        val green = Color(p.green)
+        val pickup = PuckBitmaps.pickup(LocalContext.current, 30f).asImageBitmap()
+        BoxWithConstraints(Modifier.fillMaxSize().background(bg)) {
+            val w = maxWidth
+            val h = maxHeight
+            Canvas(Modifier.fillMaxSize()) {
+                drawRect(green, Offset(size.width * 0.05f, size.height * 0.30f), androidx.compose.ui.geometry.Size(size.width * 0.28f, size.height * 0.14f))
+                drawRect(water, Offset(size.width * 0.70f, size.height * 0.52f), androidx.compose.ui.geometry.Size(size.width * 0.4f, size.height * 0.08f))
+                for (i in -2..14) {
+                    val x = size.width * i / 7f
+                    drawLine(road, Offset(x, 0f), Offset(x + 160f, size.height), strokeWidth = 18f)
+                    val y = size.height * i / 11f
+                    drawLine(road, Offset(0f, y), Offset(size.width, y - 120f), strokeWidth = 16f)
+                }
+                drawLine(major, Offset(0f, size.height * 0.48f), Offset(size.width, size.height * 0.40f), strokeWidth = 30f)
+                drawLine(motorway, Offset(size.width * 0.82f, 0f), Offset(size.width * 0.95f, size.height), strokeWidth = 38f)
+                val route = Path().apply {
+                    moveTo(size.width * 0.5f, size.height * (carAt + 0.02f))
+                    lineTo(size.width * 0.505f, size.height * 0.50f)
+                    lineTo(size.width * 0.51f, size.height * 0.44f)
+                    lineTo(size.width * 0.86f, size.height * 0.385f)
+                    lineTo(size.width * 1.05f, size.height * 0.36f)
+                }
+                val blue = Color(0xFF2F7BFF)
+                drawPath(route, blue.copy(alpha = if (dark) 0.45f else 0.22f), style = Stroke(width = 80f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                drawPath(route, if (dark) Color.White else Color(0xFF0A2E7A), style = Stroke(width = 44f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                drawPath(route, blue, style = Stroke(width = 32f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                if (jam) {
+                    drawLine(Color(0xFFE8253C), Offset(size.width * 0.62f, size.height * 0.4225f), Offset(size.width * 0.80f, size.height * 0.394f), strokeWidth = 32f, cap = StrokeCap.Round)
+                    drawLine(Color(0xFFFFC233), Offset(size.width * 0.52f, size.height * 0.438f), Offset(size.width * 0.62f, size.height * 0.4225f), strokeWidth = 32f, cap = StrokeCap.Round)
+                }
+                // Šipka manévru v křižovatce
+                val arrow = Path().apply {
+                    moveTo(size.width * 0.505f, size.height * 0.50f)
+                    lineTo(size.width * 0.51f, size.height * 0.44f)
+                    lineTo(size.width * 0.60f, size.height * 0.425f)
+                }
+                drawPath(arrow, Color(0xFF0A2E7A), style = Stroke(width = 30f, cap = StrokeCap.Round, join = StrokeJoin.Round))
+                drawPath(arrow, Color.White, style = Stroke(width = 16f, join = StrokeJoin.Round))
             }
-            val path = Path().apply {
-                moveTo(size.width * 0.5f, size.height * 1.05f)
-                lineTo(size.width * 0.52f, size.height * 0.62f)
-                lineTo(size.width * 0.55f, size.height * 0.42f)
-                lineTo(size.width * 0.85f, size.height * 0.36f)
-            }
-            drawPath(path, Color(0xFF1A3E8C), style = Stroke(width = 46f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-            drawPath(path, Color(0xFF2F6FED), style = Stroke(width = 32f, cap = StrokeCap.Round, join = StrokeJoin.Round))
-            drawCircle(Color.White, 26f, Offset(size.width * 0.52f, size.height * 0.66f))
-            drawCircle(Color(0xFF2F6FED), 19f, Offset(size.width * 0.52f, size.height * 0.66f))
+            Image(
+                pickup,
+                null,
+                Modifier.offset(w * 0.5f - 16.dp, h * carAt - 30.dp).size(32.dp, 62.dp),
+            )
         }
     }
 
     @Composable
-    private fun NavScene(state: NavigationState.Navigating, dark: Boolean, camera: CameraState) {
+    private fun NavScene(state: NavigationState.Navigating, dark: Boolean, camera: CameraState, jam: Boolean = false) {
         NavTheme(dark) {
             Box(Modifier.fillMaxSize()) {
-                FakeMap(dark)
-                ManeuverBanner(state, dark, Modifier.align(Alignment.TopCenter).padding(12.dp).padding(top = 28.dp))
+                FakeMap(dark, jam = jam)
+                ManeuverCard(state, Modifier.align(Alignment.TopCenter).padding(12.dp).padding(top = 28.dp))
                 Column(Modifier.align(Alignment.BottomCenter)) {
                     Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-                        SpeedIndicator(state.speedMps, state.progress?.speedLimitKph, state.isSpeeding, Modifier.align(Alignment.BottomStart))
-                        MapControls(camera, {}, {}, {}, {}, {}, {}, {}, Modifier.align(Alignment.BottomEnd))
+                        SpeedGauge(state.speedMps, state.progress?.speedLimitKph, state.isSpeeding, Modifier.align(Alignment.BottomStart))
+                        if (camera.followMode != FollowMode.FOLLOW) RecenterPill({}, Modifier.align(Alignment.BottomCenter))
+                        MapControls(camera, {}, {}, {}, {}, {}, {}, Modifier.align(Alignment.BottomEnd))
                     }
-                    TripBar(state, voiceEnabled = true, onStop = {}, onOverview = {}, onToggleVoice = {}, modifier = Modifier.padding(12.dp))
+                    TripDock(state, voiceEnabled = true, onStop = {}, onOverview = {}, onToggleVoice = {}, modifier = Modifier.padding(10.dp))
                 }
             }
         }
@@ -135,21 +190,25 @@ class HudScreenshotTest {
 
     @Test
     fun navigatingCityDay() {
-        val turn = maneuver(ManeuverType.RIGHT, "Odbočte vpravo na Husova.", "Husova", at = 1_300.0, len = 120.0)
-        val then = maneuver(ManeuverType.LEFT, "Odbočte vlevo na Joštova.", "Joštova", at = 1_420.0, len = 800.0)
+        val prev = maneuver(ManeuverType.CONTINUE, "Pokračujte", "Kounicova", at = 3_900.0, len = 400.0)
+        val turn = maneuver(ManeuverType.RIGHT, "Odbočte vpravo na Husova.", "Husova", at = 4_300.0, len = 120.0)
+        val then = maneuver(ManeuverType.LEFT, "Odbočte vlevo na Joštova.", "Joštova", at = 4_420.0, len = 800.0)
         val camera = CameraState(followMode = FollowMode.FOLLOW, zoomPolicy = ZoomPolicy.Locked(20.5), effectiveZoom = 20.5)
-        compose.setContent { NavScene(navigating(turn, then, 300.0, speed = 57.0, limit = 50, speeding = true), dark = false, camera) }
+        compose.setContent { NavScene(navigating(prev, turn, then, 120.0, speed = 57.0, limit = 50, speeding = true), dark = false, camera) }
         compose.onRoot().captureRoboImage("$out/1_navigace_mesto_den.png")
     }
 
     @Test
-    fun navigatingHighwayNight() {
+    fun navigatingHighwayNightWithTraffic() {
+        val prev = maneuver(ManeuverType.RAMP_STRAIGHT, "Nájezd", "D1", at = 1_200.0, len = 4_500.0)
         val exit = maneuver(
-            ManeuverType.EXIT_RIGHT, "Sjeďte na výjezdu 230 na 46 směrem na Olomouc/Ostrava.", "D46", at = 2_500.0, len = 37_000.0,
+            ManeuverType.EXIT_RIGHT, "Sjeďte na výjezdu 230 na 46 směrem na Olomouc/Ostrava.", "D46", at = 5_700.0, len = 37_000.0,
             sign = ManeuverSign(exitNumber = "230", toward = listOf("Olomouc", "Ostrava")),
         )
         val camera = CameraState(followMode = FollowMode.FREE, zoomPolicy = ZoomPolicy.Auto, effectiveZoom = 15.0)
-        compose.setContent { NavScene(navigating(exit, null, 1_500.0, speed = 128.0, limit = 130, speeding = false), dark = true, camera) }
+        compose.setContent {
+            NavScene(navigating(prev, exit, null, 1_500.0, speed = 128.0, limit = 130, speeding = false, delay = 420.0), dark = true, camera, jam = true)
+        }
         compose.onRoot().captureRoboImage("$out/2_navigace_dalnice_noc.png")
     }
 
@@ -157,14 +216,14 @@ class HudScreenshotTest {
     fun routePreview() {
         val ms = listOf(maneuver(ManeuverType.DEPART, "Jeďte", at = 0.0, len = 10.0), maneuver(ManeuverType.ARRIVE, "Cíl", at = 10.0, len = 0.0))
         val routes = listOf(
-            Route("a", geometry, ms, 76_800.0, 3_552.0, "D1, D46", hasToll = true, hasHighway = true),
-            Route("b", geometry, ms, 71_200.0, 4_380.0, "I/46, II/150", hasHighway = false),
+            Route("a", geometry, ms, 76_800.0, 3_552.0, "D1, D46", hasToll = true, hasHighway = true, traffic = RouteTraffic(0.0, 3_120.0, 240.0, emptyList(), 1)),
+            Route("b", geometry, ms, 71_200.0, 4_380.0, "I/46, II/150", traffic = RouteTraffic(0.0, 3_960.0, 0.0, emptyList(), 1)),
         )
         val state = NavigationState.Preview(Place("Olomouc", GeoPoint(49.59, 17.25), "Horní náměstí, Olomouc"), routes, 0)
         compose.setContent {
             NavTheme(false) {
                 Box(Modifier.fillMaxSize()) {
-                    FakeMap(false)
+                    FakeMap(false, carAt = 0.5f)
                     RoutePreviewSheet(state, AppSettings(), {}, {}, {}, {}, {}, Modifier.align(Alignment.BottomCenter))
                 }
             }
@@ -174,18 +233,21 @@ class HudScreenshotTest {
 
     @Test
     fun idleWithSearch() {
-        val home = Place("Domov", GeoPoint(49.2, 16.6))
-        val saved = SavedPlaces(home = home, work = Place("Mendelu", GeoPoint(49.21, 16.61)), recents = listOf(Place("Lysá hora", GeoPoint(49.54, 18.45))))
+        val saved = SavedPlaces(
+            home = Place("Domov", GeoPoint(49.2, 16.6)),
+            work = Place("Mendelu", GeoPoint(49.21, 16.61)),
+            recents = listOf(Place("Lysá hora", GeoPoint(49.54, 18.45))),
+        )
         compose.setContent {
-            NavTheme(false) {
+            NavTheme(true) {
                 Box(Modifier.fillMaxSize()) {
-                    FakeMap(false)
+                    FakeMap(true, carAt = 0.62f)
                     Column(Modifier.padding(12.dp).padding(top = 28.dp)) {
                         SearchBar({}, {})
                         Spacer(Modifier.height(10.dp))
                         QuickPlaces(saved, {})
                     }
-                    MapControls(CameraState(), {}, {}, {}, {}, {}, {}, {}, Modifier.align(Alignment.BottomEnd).padding(12.dp))
+                    MapControls(CameraState(), {}, {}, {}, {}, {}, {}, Modifier.align(Alignment.BottomEnd).padding(12.dp).padding(bottom = 24.dp))
                 }
             }
         }
@@ -196,13 +258,23 @@ class HudScreenshotTest {
     fun maneuverIconSheet() {
         compose.setContent {
             NavTheme(true) {
-                Column(Modifier.background(Color(0xFF0E7C5A)).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.background(Hud.Background).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        val pickup = PuckBitmaps.pickup(LocalContext.current, 60f).asImageBitmap()
+                        Image(pickup, null, Modifier.size(64.dp, 124.dp))
+                        Spacer(Modifier.width(16.dp))
+                        Image(pickup, null, Modifier.size(64.dp, 124.dp).rotate(35f))
+                        Spacer(Modifier.width(16.dp))
+                        Text("Ukazatel polohy", color = Hud.TextPrimary, style = MaterialTheme.typography.titleLarge)
+                    }
                     ManeuverType.entries.filter { it != ManeuverType.UNKNOWN }.chunked(4).forEach { row ->
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             row.forEach { type ->
                                 Column(Modifier.size(width = 92.dp, height = 86.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                    ManeuverIcon(maneuver(type, type.name, at = 0.0, len = 0.0, exits = 3), 56.dp)
-                                    Text(type.name.lowercase(), color = Color.White, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                                    Box(Modifier.size(56.dp).background(Hud.PapayaGradient, androidx.compose.foundation.shape.RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) {
+                                        ManeuverIcon(maneuver(type, type.name, at = 0.0, len = 0.0, exits = 3), 44.dp)
+                                    }
+                                    Text(type.name.lowercase(), color = Hud.TextSecondary, style = MaterialTheme.typography.labelMedium, maxLines = 1)
                                 }
                             }
                         }
