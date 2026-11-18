@@ -6,7 +6,14 @@ package cz.fenixen.navigation.car
 
 import android.Manifest
 import android.content.pm.PackageManager
+import androidx.car.app.AppManager
 import androidx.car.app.CarContext
+import androidx.car.app.versioning.CarAppApiLevels
+import androidx.car.app.model.Alert
+import androidx.car.app.model.AlertCallback
+import androidx.car.app.model.CarText
+import cz.fenixen.navigation.core.navigation.FasterRouteOffer
+import kotlin.math.roundToInt
 import androidx.car.app.CarToast
 import androidx.car.app.Screen
 import androidx.car.app.model.Action
@@ -53,6 +60,7 @@ class MainCarScreen(
                         if (onTop && (state is NavigationState.Planning || state is NavigationState.Preview)) {
                             screenManager.push(RoutePreviewCarScreen(carContext, graph, renderer))
                         }
+                        (state as? NavigationState.Navigating)?.fasterRoute?.let(::offerFasterRoute)
                         invalidate()
                     }
             }
@@ -179,6 +187,32 @@ class MainCarScreen(
             )
             .addAction(fourth)
             .build()
+    }
+
+    private var shownOfferId = -1
+
+    /** Faster route in the car: host alert with Use / No (API 5+), otherwise a toast + voice. */
+    private fun offerFasterRoute(offer: FasterRouteOffer) {
+        if (offer.id == shownOfferId) return
+        shownOfferId = offer.id
+        val minutes = (offer.savingSeconds / 60).roundToInt()
+        val title = "Rychlejší trasa: −$minutes min"
+        if (carContext.carAppApiLevel < CarAppApiLevels.LEVEL_5) {
+            toast(title)
+            return
+        }
+        val alert = Alert.Builder(offer.id, CarText.create(title), 30_000)
+            .apply { offer.route.summary.takeIf { it.isNotBlank() }?.let { setSubtitle(CarText.create("přes $it")) } }
+            .addAction(Action.Builder().setTitle("Použít").setOnClickListener { session.acceptFasterRoute() }.build())
+            .addAction(Action.Builder().setTitle("Ne").setOnClickListener { session.dismissFasterRoute() }.build())
+            .setCallback(object : AlertCallback {
+                override fun onCancel(reason: Int) {
+                    if (reason == AlertCallback.REASON_TIMEOUT) session.dismissFasterRoute()
+                }
+                override fun onDismiss() = Unit
+            })
+            .build()
+        carContext.getCarService(AppManager::class.java).showAlert(alert)
     }
 
     private fun toast(text: String) = CarToast.makeText(carContext, text, CarToast.LENGTH_SHORT).show()

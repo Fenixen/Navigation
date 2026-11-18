@@ -50,6 +50,8 @@ import cz.fenixen.navigation.map.MapViewport
 import cz.fenixen.navigation.map.NavMapController
 import cz.fenixen.navigation.ui.components.ArrivedSheet
 import cz.fenixen.navigation.ui.components.FailedSheet
+import cz.fenixen.navigation.ui.components.FasterRouteCard
+import cz.fenixen.navigation.ui.components.IncidentChip
 import cz.fenixen.navigation.ui.components.GlassPanel
 import cz.fenixen.navigation.ui.components.ManeuverCard
 import cz.fenixen.navigation.ui.components.MapControls
@@ -163,6 +165,7 @@ private fun PortraitHud(
             Modifier.align(Alignment.BottomCenter).fillMaxWidth().onSizeChanged { bottomPx = it.height },
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            FasterRoute(state, hud, Modifier.padding(horizontal = 10.dp))
             Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
                 SpeedArea(state, speedMps, Modifier.align(Alignment.BottomStart))
                 FollowArea(camera, hud, Modifier.align(Alignment.BottomCenter))
@@ -194,6 +197,7 @@ private fun WideHud(
         Column(Modifier.width(panel).fillMaxHeight()) {
             TopContent(state, places, hasPermission, hud)
             Spacer(Modifier.weight(1f))
+            FasterRoute(state, hud, Modifier.padding(bottom = 8.dp))
             SpeedArea(state, speedMps, Modifier)
             Spacer(Modifier.height(8.dp))
             BottomContent(state, settings, hud, Modifier)
@@ -206,7 +210,10 @@ private fun WideHud(
 @Composable
 private fun TopContent(state: NavigationState, places: SavedPlaces, hasPermission: Boolean, hud: HudCallbacks) {
     when (state) {
-        is NavigationState.Navigating -> ManeuverCard(state)
+        is NavigationState.Navigating -> Column(horizontalAlignment = Alignment.Start) {
+            ManeuverCard(state)
+            IncidentChip(state, Modifier.padding(top = 8.dp))
+        }
         is NavigationState.Idle, is NavigationState.Failed -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
             SearchBar(onClick = hud.vm::openSearch, onSettings = hud.vm::openSettings)
             Spacer(Modifier.height(10.dp))
@@ -223,6 +230,14 @@ private fun TopContent(state: NavigationState, places: SavedPlaces, hasPermissio
             }
         }
         else -> Unit
+    }
+}
+
+@Composable
+private fun FasterRoute(state: NavigationState, hud: HudCallbacks, modifier: Modifier) {
+    val offer = (state as? NavigationState.Navigating)?.fasterRoute
+    AnimatedVisibility(offer != null, modifier, enter = slideInVertically { it } + fadeIn(), exit = slideOutVertically { it } + fadeOut()) {
+        if (offer != null) FasterRouteCard(offer, onAccept = hud.vm::acceptFasterRoute, onDismiss = hud.vm::dismissFasterRoute)
     }
 }
 

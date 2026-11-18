@@ -113,6 +113,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun selectRoute(index: Int) = session.selectRoute(index)
     fun startNavigation() = session.startNavigation()
     fun stopNavigation() = session.stop()
+    fun acceptFasterRoute() = session.acceptFasterRoute()
+    fun dismissFasterRoute() = session.dismissFasterRoute()
     fun retry() = session.retry()
 
     fun setHome(place: Place) = graph.places.setHome(place)

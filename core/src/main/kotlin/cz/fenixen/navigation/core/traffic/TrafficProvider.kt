@@ -1,15 +1,25 @@
 package cz.fenixen.navigation.core.traffic
 
+import cz.fenixen.navigation.core.geo.GeoBounds
 import cz.fenixen.navigation.core.geo.GeoPoint
 import cz.fenixen.navigation.core.geo.Polyline
+import cz.fenixen.navigation.core.model.IncidentCategory
 import cz.fenixen.navigation.core.model.Route
+import cz.fenixen.navigation.core.model.RouteOptions
 import cz.fenixen.navigation.core.model.RouteTraffic
 import cz.fenixen.navigation.core.model.TrafficLevel
+import cz.fenixen.navigation.core.model.TrafficIncident
+import cz.fenixen.navigation.core.model.TrafficRoute
 import cz.fenixen.navigation.core.model.TrafficSpan
 import cz.fenixen.navigation.core.routing.awaitString
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.addJsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -26,6 +36,12 @@ import java.util.Locale
 interface TrafficProvider {
     /** Traffic for the part of [route] from [fromDistance] (metres along the route) to the end. */
     suspend fun traffic(route: Route, fromDistance: Double = 0.0): RouteTraffic
+
+    /** Current incidents (accidents, closures, road works …) inside [bounds]. */
+    suspend fun incidents(bounds: GeoBounds): List<TrafficIncident> = emptyList()
+
+    /** Fastest route with current traffic – used to detect a faster alternative while driving. */
+    suspend fun fastestRoute(origin: GeoPoint, bearing: Double?, destination: GeoPoint, options: RouteOptions): TrafficRoute? = null
 }
 
 class TrafficException(message: String, cause: Throwable? = null) : Exception(message, cause)
@@ -68,6 +84,51 @@ class TomTomTrafficProvider(
         if (result.code !in 200..299) throw TrafficException("TomTom HTTP ${result.code}")
         val remainingLength = route.geometry.length - fromDistance
         return TomTomTraffic.parse(result.body, fromDistance, remainingLength, clock())
+    }
+
+    override suspend fun incidents(bounds: GeoBounds): List<TrafficIncident> {
+        val url = "https://api.tomtom.com/traffic/services/5/incidentDetails".toHttpUrl().newBuilder()
+            .addQueryParameter("key", key())
+            .addQueryParameter(
+                "bbox",
+                String.format(Locale.ROOT, "%.5f,%.5f,%.5f,%.5f", bounds.west, bounds.south, bounds.east, bounds.north),
+            )
+            .addQueryParameter("fields", TomTomTraffic.INCIDENT_FIELDS)
+            .addQueryParameter("language", "cs-CZ")
+            .addQueryParameter("timeValidityFilter", "present")
+            .build()
+        return TomTomTraffic.parseIncidents(get(url.toString()))
+    }
+
+    override suspend fun fastestRoute(origin: GeoPoint, bearing: Double?, destination: GeoPoint, options: RouteOptions): TrafficRoute? {
+        val locations = String.format(Locale.ROOT, "%.6f,%.6f:%.6f,%.6f", origin.lat, origin.lon, destination.lat, destination.lon)
+        val url = "https://api.tomtom.com/routing/1/calculateRoute/$locations/json".toHttpUrl().newBuilder()
+            .addQueryParameter("key", key())
+            .addQueryParameter("traffic", "true")
+            .addQueryParameter("travelMode", "car")
+            .addQueryParameter("routeType", "fastest")
+            .apply {
+                bearing?.let { addQueryParameter("vehicleHeading", it.toInt().coerceIn(0, 359).toString()) }
+                if (options.avoidTolls) addQueryParameter("avoid", "tollRoads")
+                if (options.avoidHighways) addQueryParameter("avoid", "motorways")
+                if (options.avoidFerries) addQueryParameter("avoid", "ferries")
+            }
+            .build()
+        return TomTomTraffic.parseRoute(get(url.toString()))
+    }
+
+    private fun key(): String = apiKey()?.takeIf { it.isNotBlank() } ?: throw TrafficException("Missing TomTom API key")
+
+    private suspend fun get(url: String): String {
+        val result = try {
+            http.awaitString(Request.Builder().url(url).get().build())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            throw TrafficException("TomTom unreachable: ${e.message}", e)
+        }
+        if (result.code !in 200..299) throw TrafficException("TomTom HTTP ${result.code}")
+        return result.body
     }
 
     private companion object {
@@ -142,6 +203,57 @@ internal object TomTomTraffic {
         )
     }
 
+    /** Only what we need from the Incident Details v5 response. */
+    const val INCIDENT_FIELDS =
+        "{incidents{type,geometry{type,coordinates},properties{id,iconCategory,magnitudeOfDelay,events{description,code,iconCategory},length,delay,roadNumbers}}}"
+
+    fun parseIncidents(body: String): List<TrafficIncident> {
+        val response = try {
+            json.decodeFromString(TtIncidents.serializer(), body)
+        } catch (e: Exception) {
+            throw TrafficException("Unexpected TomTom incidents response", e)
+        }
+        return response.incidents.mapNotNull { f ->
+            val geometry = f.geometry.points()
+            if (geometry.isEmpty()) return@mapNotNull null
+            val p = f.properties
+            TrafficIncident(
+                id = p.id ?: geometry.first().toString(),
+                category = category(p.iconCategory),
+                geometry = geometry,
+                description = p.events.firstOrNull()?.description,
+                delaySeconds = p.delay?.toDouble(),
+                lengthMeters = p.length,
+                roadNumbers = p.roadNumbers,
+            )
+        }
+    }
+
+    fun parseRoute(body: String): TrafficRoute? {
+        val response = try {
+            json.decodeFromString(TtResponse.serializer(), body)
+        } catch (e: Exception) {
+            throw TrafficException("Unexpected TomTom route response", e)
+        }
+        val route = response.routes.firstOrNull() ?: return null
+        val points = route.legs.flatMap { it.points }.map { GeoPoint(it.latitude, it.longitude) }
+        if (points.size < 2) return null
+        return TrafficRoute(points, route.summary.travelTimeInSeconds.toDouble(), route.summary.trafficDelayInSeconds.toDouble())
+    }
+
+    /** TomTom iconCategory → our category (see Incident Details API docs). */
+    fun category(code: Int?): IncidentCategory = when (code) {
+        1 -> IncidentCategory.ACCIDENT
+        6 -> IncidentCategory.JAM
+        7 -> IncidentCategory.LANE_CLOSED
+        8 -> IncidentCategory.ROAD_CLOSED
+        9 -> IncidentCategory.ROAD_WORKS
+        14 -> IncidentCategory.BROKEN_DOWN_VEHICLE
+        3 -> IncidentCategory.DANGER
+        2, 4, 5, 10, 11 -> IncidentCategory.WEATHER
+        else -> IncidentCategory.OTHER
+    }
+
     private fun level(s: TtSection): TrafficLevel = when {
         s.simpleCategory == "ROAD_CLOSURE" || s.magnitudeOfDelay == 4 -> TrafficLevel.CLOSED
         s.magnitudeOfDelay == 3 -> TrafficLevel.JAM
@@ -151,6 +263,43 @@ internal object TomTomTraffic {
         else -> TrafficLevel.SLOW
     }
 }
+
+@Serializable
+internal data class TtIncidents(val incidents: List<TtIncident> = emptyList())
+
+@Serializable
+internal data class TtIncident(val geometry: TtGeometry, val properties: TtIncidentProperties)
+
+@Serializable
+internal data class TtGeometry(val type: String, val coordinates: JsonElement) {
+    /** Point → [lon, lat]; LineString → [[lon, lat], …]. */
+    fun points(): List<GeoPoint> = when (type) {
+        "Point" -> listOfNotNull(coordinates.jsonArray.toPoint())
+        "LineString" -> coordinates.jsonArray.mapNotNull { it.jsonArray.toPoint() }
+        else -> emptyList()
+    }
+
+    private fun JsonArray.toPoint(): GeoPoint? {
+        if (size < 2) return null
+        val lon = this[0].jsonPrimitive.doubleOrNull ?: return null
+        val lat = this[1].jsonPrimitive.doubleOrNull ?: return null
+        return if (lat in -90.0..90.0 && lon in -180.0..180.0) GeoPoint(lat, lon) else null
+    }
+}
+
+@Serializable
+internal data class TtIncidentProperties(
+    val id: String? = null,
+    val iconCategory: Int? = null,
+    val magnitudeOfDelay: Int? = null,
+    val events: List<TtEvent> = emptyList(),
+    val length: Double? = null,
+    val delay: Int? = null,
+    val roadNumbers: List<String> = emptyList(),
+)
+
+@Serializable
+internal data class TtEvent(val description: String? = null, val code: Int? = null, val iconCategory: Int? = null)
 
 @Serializable
 internal data class TtResponse(val routes: List<TtRoute> = emptyList())

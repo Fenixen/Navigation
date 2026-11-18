@@ -42,7 +42,13 @@ import cz.fenixen.navigation.core.model.ManeuverSign
 import cz.fenixen.navigation.core.model.ManeuverType
 import cz.fenixen.navigation.core.model.Place
 import cz.fenixen.navigation.core.model.Route
+import cz.fenixen.navigation.core.model.IncidentCategory
+import cz.fenixen.navigation.core.model.RouteIncident
 import cz.fenixen.navigation.core.model.RouteTraffic
+import cz.fenixen.navigation.core.model.TrafficIncident
+import cz.fenixen.navigation.core.navigation.FasterRouteOffer
+import cz.fenixen.navigation.ui.components.FasterRouteCard
+import cz.fenixen.navigation.ui.components.IncidentChip
 import cz.fenixen.navigation.core.navigation.CameraState
 import cz.fenixen.navigation.core.navigation.FollowMode
 import cz.fenixen.navigation.core.navigation.NavigationState
@@ -101,6 +107,8 @@ class HudScreenshotTest {
         limit: Int?,
         speeding: Boolean,
         delay: Double? = null,
+        incident: IncidentCategory? = null,
+        offer: Boolean = false,
     ): NavigationState.Navigating {
         val ms = listOfNotNull(previous, upcoming, following, maneuver(ManeuverType.ARRIVE, "Cíl", at = 12_000.0, len = 0.0))
         val traffic = delay?.let { RouteTraffic(0.0, 1_460.0, it, emptyList(), 1) }
@@ -110,7 +118,12 @@ class HudScreenshotTest {
             distanceToUpcoming = toUpcoming, durationToUpcoming = 20.0, snappedPoint = geometry.points[0], snappedBearing = 0.0,
             distanceFromRoute = 0.0, speedLimitKph = limit,
         )
-        return NavigationState.Navigating(Place("Hlavní nádraží", GeoPoint(49.19, 16.61)), route, progress, speed / 3.6, speeding)
+        val incidents = incident?.let { listOf(RouteIncident(TrafficIncident("i1", it, listOf(geometry.points[0]), delaySeconds = 540.0), 6_000.0)) }.orEmpty()
+        val fasterRoute = if (offer) FasterRouteOffer(1, route.copy(summary = "D52, I/53"), 480.0, 0) else null
+        return NavigationState.Navigating(
+            Place("Hlavní nádraží", GeoPoint(49.19, 16.61)), route, progress, speed / 3.6, speeding,
+            incidents = incidents, fasterRoute = fasterRoute,
+        )
     }
 
     /** Stylised map in the app's palette: blocks, roads, motorway, glowing route, jam, maneuver arrow, pickup. */
@@ -175,8 +188,12 @@ class HudScreenshotTest {
         NavTheme(dark) {
             Box(Modifier.fillMaxSize()) {
                 FakeMap(dark, jam = jam)
-                ManeuverCard(state, Modifier.align(Alignment.TopCenter).padding(12.dp).padding(top = 28.dp))
+                Column(Modifier.align(Alignment.TopCenter).padding(12.dp).padding(top = 28.dp)) {
+                    ManeuverCard(state)
+                    IncidentChip(state, Modifier.padding(top = 8.dp))
+                }
                 Column(Modifier.align(Alignment.BottomCenter)) {
+                    state.fasterRoute?.let { FasterRouteCard(it, {}, {}, Modifier.padding(horizontal = 10.dp)) }
                     Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
                         SpeedGauge(state.speedMps, state.progress?.speedLimitKph, state.isSpeeding, Modifier.align(Alignment.BottomStart))
                         if (camera.followMode != FollowMode.FOLLOW) RecenterPill({}, Modifier.align(Alignment.BottomCenter))
@@ -207,7 +224,10 @@ class HudScreenshotTest {
         )
         val camera = CameraState(followMode = FollowMode.FREE, zoomPolicy = ZoomPolicy.Auto, effectiveZoom = 15.0)
         compose.setContent {
-            NavScene(navigating(prev, exit, null, 1_500.0, speed = 128.0, limit = 130, speeding = false, delay = 420.0), dark = true, camera, jam = true)
+            NavScene(
+                navigating(prev, exit, null, 1_500.0, speed = 128.0, limit = 130, speeding = false, delay = 420.0, incident = IncidentCategory.ACCIDENT, offer = true),
+                dark = true, camera, jam = true,
+            )
         }
         compose.onRoot().captureRoboImage("$out/2_navigace_dalnice_noc.png")
     }

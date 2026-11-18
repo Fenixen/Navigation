@@ -374,3 +374,70 @@ fun RecenterPill(onClick: () -> Unit, modifier: Modifier = Modifier) {
         }
     }
 }
+
+/** Nearest incident ahead: "⚠ Nehoda · 1,8 km · +9 min". */
+@Composable
+fun IncidentChip(state: NavigationState.Navigating, modifier: Modifier = Modifier) {
+    val progress = state.progress ?: return
+    val next = state.nextIncident ?: return
+    val distance = next.distanceAlong - progress.distanceAlong
+    if (distance > 15_000) return
+    val color = Color(cz.fenixen.navigation.map.PuckBitmaps.incidentColor(next.incident.category))
+    Surface(color = Hud.GlassStrong, contentColor = Hud.TextPrimary, shape = RoundedCornerShape(18.dp), border = Hud.GlassBorder, modifier = modifier) {
+        Row(Modifier.padding(start = 8.dp, end = 14.dp, top = 7.dp, bottom = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(26.dp).clip(CircleShape).background(color), contentAlignment = Alignment.Center) {
+                Text("!", color = Color.White, fontWeight = FontWeight.Black, fontSize = 15.sp)
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(
+                cz.fenixen.navigation.core.traffic.IncidentTexts.label(next.incident.category),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Text(" · ${CzechFormat.distance(distance.coerceAtLeast(0.0))}", style = MaterialTheme.typography.labelLarge, color = Hud.TextSecondary)
+            next.incident.delaySeconds?.let { TrafficChip(it) }
+        }
+    }
+}
+
+/**
+ * "Faster route – save 8 min". Accept or dismiss; a draining bar shows how long the offer is valid
+ * (after that the turn-off may already be behind us).
+ */
+@Composable
+fun FasterRouteCard(
+    offer: cz.fenixen.navigation.core.navigation.FasterRouteOffer,
+    onAccept: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val remaining = androidx.compose.runtime.remember(offer.id) { androidx.compose.animation.core.Animatable(1f) }
+    androidx.compose.runtime.LaunchedEffect(offer.id) {
+        remaining.animateTo(0f, tween(60_000, easing = androidx.compose.animation.core.LinearEasing))
+    }
+    GlassPanel(modifier.widthIn(max = 560.dp).fillMaxWidth(), shape = RoundedCornerShape(26.dp)) {
+        Column {
+            Row(Modifier.padding(start = 16.dp, end = 10.dp, top = 12.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("RYCHLEJŠÍ TRASA", style = Hud.Label.copy(color = Hud.Mint))
+                    Text(
+                        "−${(offer.savingSeconds / 60).roundToInt()} min",
+                        style = Hud.Number.copy(fontSize = 26.sp, color = Hud.Mint),
+                    )
+                    offer.route.summary.takeIf { it.isNotBlank() }?.let {
+                        Text("přes $it", style = MaterialTheme.typography.bodyMedium, color = Hud.TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                RoundButton(R.drawable.ic_close, stringResource(R.string.cancel), onDismiss)
+                Spacer(Modifier.width(8.dp))
+                Surface(onClick = onAccept, shape = RoundedCornerShape(20.dp), color = Hud.Mint, contentColor = Color(0xFF00281A), modifier = Modifier.height(50.dp)) {
+                    Box(Modifier.padding(horizontal = 18.dp), contentAlignment = Alignment.Center) {
+                        Text("POUŽÍT", fontWeight = FontWeight.Black, letterSpacing = 1.2.sp)
+                    }
+                }
+            }
+            Box(Modifier.fillMaxWidth().height(3.dp).background(Color.White.copy(alpha = 0.06f))) {
+                Box(Modifier.fillMaxWidth(remaining.value).fillMaxHeight().background(Hud.Mint))
+            }
+        }
+    }
+}

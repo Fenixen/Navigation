@@ -14,6 +14,7 @@ import androidx.core.graphics.toColorInt
 import cz.fenixen.navigation.core.geo.Geo
 import cz.fenixen.navigation.core.geo.GeoPoint
 import cz.fenixen.navigation.core.geo.Polyline
+import cz.fenixen.navigation.core.model.IncidentCategory
 import cz.fenixen.navigation.core.model.LocationFix
 import cz.fenixen.navigation.core.model.Route
 import cz.fenixen.navigation.core.model.TrafficLevel
@@ -128,6 +129,7 @@ class NavMapController(
     private var drawnTrafficAt = -1L
     private var drawnPreviewKey: String? = null
     private var drawnManeuverKey: String? = null
+    private var drawnIncidentsKey: String? = null
 
     private val frames = FrameLoop()
 
@@ -256,6 +258,7 @@ class NavMapController(
         drawnGeometry = null
         drawnPreviewKey = null
         drawnManeuverKey = null
+        drawnIncidentsKey = null
         drawnFrom = -1.0
         if (!observing) {
             observing = true
@@ -283,6 +286,8 @@ class NavMapController(
         s.addSource(GeoJsonSource(SRC_MANEUVER))
         s.addSource(GeoJsonSource(SRC_MANEUVER_HEAD))
         s.addSource(GeoJsonSource(SRC_DESTINATION))
+        s.addSource(GeoJsonSource(SRC_INCIDENTS))
+        IncidentCategory.entries.forEach { s.addImage(incidentImage(it), PuckBitmaps.incident(context, it)) }
         s.addImage(IMG_DESTINATION, destinationPin())
         s.addImage(IMG_ARROW, PuckBitmaps.arrowHead(context, WHITE, ROUTE_CASING))
         s.addImage(IMG_PICKUP, PuckBitmaps.pickup(context))
@@ -351,6 +356,16 @@ class NavMapController(
                 PropertyFactory.iconIgnorePlacement(true),
                 PropertyFactory.iconSize(Expression.interpolate(Expression.exponential(1.5f), Expression.zoom(), Expression.stop(15, 0.7f), Expression.stop(20, 2.2f))),
             ).apply { minZoom = 14.5f },
+        )
+        // Dopravní události na trase (nehody, uzavírky, práce…).
+        s.addLayer(
+            SymbolLayer(LYR_INCIDENTS, SRC_INCIDENTS).withProperties(
+                PropertyFactory.iconImage(Expression.get("icon")),
+                PropertyFactory.iconAllowOverlap(true),
+                PropertyFactory.iconIgnorePlacement(true),
+                PropertyFactory.iconPitchAlignment(Property.ICON_PITCH_ALIGNMENT_VIEWPORT),
+                PropertyFactory.iconSize(Expression.interpolate(Expression.linear(), Expression.zoom(), Expression.stop(9, 0.7f), Expression.stop(15, 1.1f))),
+            ),
         )
         s.addLayer(
             SymbolLayer(LYR_DESTINATION, SRC_DESTINATION).withProperties(
@@ -473,11 +488,29 @@ class NavMapController(
             drawnTrafficAt = trafficAt
             s.getSourceAs<GeoJsonSource>(SRC_ROUTE)?.setGeoJson(routeFeatures(route, from))
         }
+        updateIncidents(s, state)
         val upcoming = state.upcoming
         val showArrow = progress != null && upcoming != null && !upcoming.type.isArrival &&
             progress.distanceToUpcoming < 700 && !state.isRerouting
         setManeuver(s, if (showArrow) route to upcoming!!.distanceFromStart else null)
     }
+
+    private fun updateIncidents(s: Style, state: NavigationState.Navigating) {
+        val ahead = state.incidents.filter { it.distanceAlong >= (state.progress?.distanceAlong ?: 0.0) - 20 }
+        val key = ahead.joinToString { it.incident.id } + "@" + System.identityHashCode(state.route.geometry)
+        if (key == drawnIncidentsKey) return
+        drawnIncidentsKey = key
+        s.getSourceAs<GeoJsonSource>(SRC_INCIDENTS)?.setGeoJson(
+            FeatureCollection.fromFeatures(
+                ahead.map { ri ->
+                    val p = state.route.geometry.pointAt(ri.distanceAlong)
+                    Feature.fromGeometry(Point.fromLngLat(p.lon, p.lat)).apply { addStringProperty("icon", incidentImage(ri.incident.category)) }
+                },
+            ),
+        )
+    }
+
+    private fun incidentImage(c: IncidentCategory) = "nav-incident-${c.name.lowercase()}"
 
     private fun clearRoutes(s: Style, keepDestination: GeoPoint?) {
         if (drawnGeometry == null && drawnPreviewKey == null && keepDestination == null && drawnManeuverKey == null) return
@@ -487,6 +520,8 @@ class NavMapController(
         s.getSourceAs<GeoJsonSource>(SRC_ALTERNATIVES)?.setGeoJson(empty)
         s.getSourceAs<GeoJsonSource>(SRC_ROUTE)?.setGeoJson(empty)
         setManeuver(s, null)
+        drawnIncidentsKey = null
+        s.getSourceAs<GeoJsonSource>(SRC_INCIDENTS)?.setGeoJson(empty)
         if (keepDestination != null) setDestination(s, keepDestination) else s.getSourceAs<GeoJsonSource>(SRC_DESTINATION)?.setGeoJson(empty)
         if (camera.state.value.followMode == FollowMode.OVERVIEW) apply(camera.recenter())
     }
@@ -771,6 +806,8 @@ class NavMapController(
         const val SRC_MANEUVER = "nav-maneuver"
         const val SRC_MANEUVER_HEAD = "nav-maneuver-head"
         const val SRC_TRAFFIC = "nav-traffic"
+        const val SRC_INCIDENTS = "nav-incidents"
+        const val LYR_INCIDENTS = "nav-incidents-icons"
         const val LYR_ROUTE = "nav-route-line"
         const val LYR_ROUTE_CASING = "nav-route-casing"
         const val LYR_ROUTE_GLOW = "nav-route-glow"

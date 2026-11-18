@@ -6,7 +6,13 @@ import cz.fenixen.navigation.core.model.LocationFix
 import cz.fenixen.navigation.core.model.Place
 import cz.fenixen.navigation.core.model.Route
 import cz.fenixen.navigation.core.model.RouteRequest
+import cz.fenixen.navigation.core.geo.GeoBounds
+import cz.fenixen.navigation.core.geo.GeoPoint
+import cz.fenixen.navigation.core.model.IncidentCategory
+import cz.fenixen.navigation.core.model.RouteOptions
 import cz.fenixen.navigation.core.model.RouteTraffic
+import cz.fenixen.navigation.core.model.TrafficIncident
+import cz.fenixen.navigation.core.model.TrafficRoute
 import cz.fenixen.navigation.core.model.SpeedLimitSpan
 import cz.fenixen.navigation.core.model.TrafficLevel
 import cz.fenixen.navigation.core.model.TrafficSpan
@@ -188,6 +194,84 @@ class NavigationSessionTest {
         runCurrent()
         assertEquals(3, traffic.calls.size, "preview + navigation start + refresh after 3 minutes")
         assertTrue(events.any { it is NavigationEvent.Speak && it.text.contains("zdržení asi 15 minut") })
+        session.stop()
+    }
+
+    private class IncidentTraffic(
+        private val incidents: List<TrafficIncident>,
+        private val fastest: TrafficRoute?,
+    ) : TrafficProvider {
+        override suspend fun traffic(route: Route, fromDistance: Double) =
+            RouteTraffic(fromDistance, route.durationSeconds, 0.0, emptyList(), 0)
+        override suspend fun incidents(bounds: GeoBounds) = incidents
+        override suspend fun fastestRoute(origin: GeoPoint, bearing: Double?, destination: GeoPoint, options: RouteOptions) = fastest
+    }
+
+    @Test
+    fun `incidents ahead are shown and announced once`() = runTest {
+        val crash = TrafficIncident("crash", IncidentCategory.ACCIDENT, highway.geometry.slice(2_200.0, 2_800.0), delaySeconds = 300.0)
+        val router = FakeRouter(listOf(highway))
+        val session = NavigationSession(router, this, clock = { testScheduler.currentTime }, traffic = { IncidentTraffic(listOf(crash), null) })
+        val events = collectEvents(session)
+        session.onLocation(startFix(highway))
+        session.planRoute(destination, autoStart = true)
+        runCurrent()
+        val nav = assertIs<NavigationState.Navigating>(session.state.value)
+        assertEquals("crash", nav.nextIncident?.incident?.id)
+
+        val sim = RouteSimulator(highway)
+        for (t in 0..200) session.onLocation(sim.fixAt(t.toDouble(), 0)!!)
+        val warnings = events.filterIsInstance<NavigationEvent.Speak>().filter { it.text.contains("nehoda") }
+        assertEquals(1, warnings.size, "announced exactly once: $warnings")
+        assertTrue(warnings.single().text.contains("Zdržení asi 5 minut"))
+        session.stop()
+    }
+
+    @Test
+    fun `faster route is offered and can be accepted`() = runTest {
+        val cityRoutes = cz.fenixen.navigation.core.routing.ValhallaParser.parseRouteResponse(city)
+        val detour = cityRoutes.first()
+        val router = object : RoutingProvider {
+            val requests = mutableListOf<RouteRequest>()
+            override suspend fun route(request: RouteRequest): List<Route> {
+                requests += request
+                return listOf(if (request.via.isEmpty()) highway else detour)
+            }
+        }
+        val fastest = TrafficRoute(detour.geometry.points, travelTimeSeconds = 600.0, delaySeconds = 0.0)
+        val session = NavigationSession(router, this, clock = { testScheduler.currentTime }, traffic = { IncidentTraffic(emptyList(), fastest) })
+        val events = collectEvents(session)
+        session.onLocation(startFix(highway))
+        session.planRoute(destination, autoStart = true)
+        runCurrent()
+        val offer = assertNotNull(assertIs<NavigationState.Navigating>(session.state.value).fasterRoute)
+        assertTrue(offer.savingSeconds > 300)
+        assertEquals(3, router.requests.last().via.size, "Valhalla follows TomTom's path via pass-through points")
+        assertTrue(events.any { it is NavigationEvent.Speak && it.text.startsWith("Je k dispozici rychlejší trasa") })
+
+        session.acceptFasterRoute()
+        val nav = assertIs<NavigationState.Navigating>(session.state.value)
+        assertEquals(detour.geometry, nav.route.geometry)
+        assertEquals(null, nav.fasterRoute)
+        session.stop()
+    }
+
+    @Test
+    fun `dismissed offer is not repeated for a while`() = runTest {
+        val detour = cz.fenixen.navigation.core.routing.ValhallaParser.parseRouteResponse(city).first()
+        val router = object : RoutingProvider {
+            override suspend fun route(request: RouteRequest) = listOf(if (request.via.isEmpty()) highway else detour)
+        }
+        val fastest = TrafficRoute(detour.geometry.points, 600.0, 0.0)
+        val session = NavigationSession(router, this, clock = { testScheduler.currentTime }, traffic = { IncidentTraffic(emptyList(), fastest) }, trafficRefreshMs = 180_000)
+        session.onLocation(startFix(highway))
+        session.planRoute(destination, autoStart = true)
+        runCurrent()
+        assertNotNull(assertIs<NavigationState.Navigating>(session.state.value).fasterRoute)
+        session.dismissFasterRoute()
+        advanceTimeBy(180_001)
+        runCurrent()
+        assertEquals(null, assertIs<NavigationState.Navigating>(session.state.value).fasterRoute, "snoozed for 10 minutes")
         session.stop()
     }
 

@@ -12,6 +12,7 @@ import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import androidx.core.graphics.createBitmap
+import cz.fenixen.navigation.core.model.IncidentCategory
 
 /**
  * Bitmaps for the car marker. The pickup is drawn top-down in a 40×76 design grid (front = up),
@@ -114,6 +115,58 @@ object PuckBitmaps {
             shader = RadialGradient(r, r, r, intArrayOf(color, Color.argb(Color.alpha(color) / 3, Color.red(color), Color.green(color), Color.blue(color)), Color.TRANSPARENT), floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP)
         }
         c.drawCircle(r, r, r, p)
+        return bmp
+    }
+
+    /** Colour coding of incidents – shared by map icons and the HUD chip. */
+    fun incidentColor(c: IncidentCategory): Int = when (c) {
+        IncidentCategory.ACCIDENT -> 0xFFE8253C.toInt()
+        IncidentCategory.ROAD_CLOSED -> 0xFFB3122E.toInt()
+        IncidentCategory.JAM, IncidentCategory.LANE_CLOSED -> 0xFFFF7A1A.toInt()
+        IncidentCategory.ROAD_WORKS, IncidentCategory.BROKEN_DOWN_VEHICLE, IncidentCategory.DANGER -> 0xFFFFB020.toInt()
+        IncidentCategory.WEATHER -> 0xFF2F7BFF.toInt()
+        IncidentCategory.OTHER -> 0xFF6B7380.toInt()
+    }
+
+    /** Round incident marker with a simple pictogram (no font glyphs – they differ between phones). */
+    fun incident(context: Context, category: IncidentCategory, sizeDp: Float = 30f): Bitmap {
+        val d = context.resources.displayMetrics.density
+        val size = sizeDp * d
+        val bmp = createBitmap(size.toInt() + 4, size.toInt() + 4)
+        val c = Canvas(bmp)
+        val r = size / 2
+        val cx = r + 2
+        val cy = r + 2
+        c.drawCircle(cx, cy, r, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = incidentColor(category)
+            setShadowLayer(2.5f * d, 0f, d, 0x80000000.toInt())
+        })
+        c.drawCircle(cx, cy, r - d, Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2 * d
+            color = Color.WHITE
+        })
+        val glyph = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = if (category == IncidentCategory.ROAD_WORKS) 0xFF1A1A1A.toInt() else Color.WHITE }
+        val u = r / 10f
+        when (category) {
+            IncidentCategory.ROAD_CLOSED, IncidentCategory.LANE_CLOSED ->
+                c.drawRoundRect(RectF(cx - 6 * u, cy - 1.8f * u, cx + 6 * u, cy + 1.8f * u), u, u, glyph)
+            IncidentCategory.JAM -> for (dy in listOf(-3.2f, 0f, 3.2f)) {
+                c.drawRoundRect(RectF(cx - 5 * u, cy + dy * u - 0.9f * u, cx + 5 * u, cy + dy * u + 0.9f * u), u, u, glyph)
+            }
+            IncidentCategory.ROAD_WORKS -> {
+                // Kužel: trojúhelník s pruhem
+                val cone = Path().apply {
+                    moveTo(cx, cy - 6 * u); lineTo(cx + 4.5f * u, cy + 5 * u); lineTo(cx - 4.5f * u, cy + 5 * u); close()
+                }
+                c.drawPath(cone, glyph)
+                c.drawRect(cx - 3.2f * u, cy + 0.2f * u, cx + 3.2f * u, cy + 1.8f * u, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = incidentColor(category) })
+            }
+            else -> {
+                c.drawRoundRect(RectF(cx - 1.3f * u, cy - 6 * u, cx + 1.3f * u, cy + 2 * u), u, u, glyph)
+                c.drawCircle(cx, cy + 4.6f * u, 1.5f * u, glyph)
+            }
+        }
         return bmp
     }
 

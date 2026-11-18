@@ -1,0 +1,27 @@
+{
+  "incidents": [
+    {
+      "type": "Feature",
+      "properties": {
+        "id": "4a3f0c1e9d",
+        "iconCategory": 1,
+        "magnitudeOfDelay": 3,
+        "events": [ { "description": "Nehoda", "code": 401, "iconCategory": 1 } ],
+        "length": 812.4,
+        "delay": 540,
+        "roadNumbers": [ "D1" ]
+      },
+      "geometry": { "type": "LineString", "coordinates": [ [16.70, 49.20], [16.71, 49.201], [16.72, 49.202] ] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": "77b2", "iconCategory": 9, "events": [ { "description": "Práce na silnici", "code": 701 } ] },
+      "geometry": { "type": "Point", "coordinates": [16.60, 49.19] }
+    },
+    {
+      "type": "Feature",
+      "properties": { "id": "broken", "iconCategory": 6 },
+      "geometry": { "type": "LineString", "coordinates": [] }
+    }
+  ]
+}

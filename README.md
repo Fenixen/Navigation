@@ -22,6 +22,8 @@ Hlavní důvod existence: **zoom, který si nastavíš, platí napořád.** Žá
 | Přepočet trasy | Detekce sjetí z trasy s hysterezí (GPS glitch ≠ sjetí), detekce jízdy v protisměru, přepočet s ohledem na směr jízdy |
 | Rychlost | Tachometr s prstencem k limitu + česká značka limitu (data OSM), červený při překročení |
 | **Živá doprava** | TomTom: kolony obarvené přímo na trase, provoz na mapě, čas s dopravou v náhledu, hlášení „zdržení asi 15 minut“ |
+| **Dopravní události** | Nehody, uzavírky, práce, porouchaná auta – ikony na mapě, upozornění v HUD a hlas „Za 2 kilometry je nehoda. Zdržení asi 9 minut.“ Jen na *tvé* straně dálnice (kontrola směru). |
+| **Rychlejší trasa** | Každé 3 minuty se ověří nejrychlejší trasa s provozem; ušetří-li ≥ 5 min, přijde nabídka (telefon: karta, auto: upozornění). Valhalla ji přepočítá přes průjezdní body, takže pokyny zůstanou česky. |
 | **ETA** | Časy routeru × doprava × naučené tempo jízdy (viz níže) – už ne nadsazené |
 | Poloha | Vlastní ukazatel (oranžový pickup), plynulá animace 60+ fps, auto ve **spodní třetině** obrazovky, ve stoji se nehýbe |
 | Vzhled | „Telemetrický“ HUD: tmavé skleněné panely, papaya akcent, zúžené číslice, vlastní styl mapy s 3D budovami, zářící trasa, šipka manévru přímo v křižovatce |
@@ -53,7 +55,8 @@ a vrátí aktuální čas jízdy, zdržení a úseky s kolonou přesně na ní.
 1. Zdarma účet na [developer.tomtom.com](https://developer.tomtom.com) → *API Keys* (free tier 2 500 dotazů/den,
    dlaždice provozu mají vlastní limit).
 2. V appce *Nastavení → Živá doprava → TomTom API klíč*.
-3. Během navigace se doprava obnovuje každé 3 minuty (≈ 20 dotazů/hod jízdy).
+3. Během navigace se každé 3 minuty obnoví doprava na trase, události (Incident Details API) a kontrola rychlejší
+   trasy – dohromady zhruba 60–80 dotazů za hodinu jízdy.
 
 Bez klíče appka funguje dál, jen bez dopravy.
 

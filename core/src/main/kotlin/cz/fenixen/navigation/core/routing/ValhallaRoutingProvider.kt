@@ -105,6 +105,18 @@ internal object ValhallaParser {
                     put("heading_tolerance", 45)
                 }
             }
+            request.via.forEach { via ->
+                addJsonObject {
+                    put("lat", via.point.lat)
+                    put("lon", via.point.lon)
+                    // „through“ = projet bez zastávky a bez otočky; směr drží správnou polovinu dálnice.
+                    put("type", "through")
+                    via.bearing?.let {
+                        put("heading", it.toInt())
+                        put("heading_tolerance", 30)
+                    }
+                }
+            }
             addJsonObject {
                 put("lat", request.destination.lat)
                 put("lon", request.destination.lon)
@@ -123,7 +135,8 @@ internal object ValhallaParser {
             put("language", language)
             put("units", "kilometers")
         }
-        if (request.options.alternatives > 0) put("alternates", request.options.alternatives)
+        // Alternativy umí Valhalla jen pro start + cíl (bez průjezdních bodů).
+        if (request.options.alternatives > 0 && request.via.isEmpty()) put("alternates", request.options.alternatives)
     }
 
     fun buildTraceAttributesRequest(points: List<GeoPoint>): JsonObject = buildJsonObject {

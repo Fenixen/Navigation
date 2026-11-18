@@ -130,7 +130,12 @@ data class RouteRequest(
     /** Current heading – lets the router prefer continuing forward (important when rerouting). */
     val originBearing: Double? = null,
     val options: RouteOptions = RouteOptions(),
+    /** Pass-through points (no stop) – used to make Valhalla follow a traffic-aware path. */
+    val via: List<ViaPoint> = emptyList(),
 )
+
+/** Point the route must pass, optionally in a given direction (avoids snapping to the opposite carriageway). */
+data class ViaPoint(val point: GeoPoint, val bearing: Double? = null)
 
 enum class TrafficLevel { FREE, SLOW, QUEUE, JAM, CLOSED }
 
@@ -153,3 +158,22 @@ data class RouteTraffic(
     val spans: List<TrafficSpan>,
     val fetchedAtMillis: Long,
 )
+
+enum class IncidentCategory { ACCIDENT, JAM, ROAD_WORKS, LANE_CLOSED, ROAD_CLOSED, DANGER, WEATHER, BROKEN_DOWN_VEHICLE, OTHER }
+
+/** A live traffic event (accident, closure, road works …) with its geometry in driving direction. */
+data class TrafficIncident(
+    val id: String,
+    val category: IncidentCategory,
+    val geometry: List<GeoPoint>,
+    val description: String? = null,
+    val delaySeconds: Double? = null,
+    val lengthMeters: Double? = null,
+    val roadNumbers: List<String> = emptyList(),
+)
+
+/** Incident matched onto the active route. */
+data class RouteIncident(val incident: TrafficIncident, val distanceAlong: Double)
+
+/** Fastest route according to a traffic-aware router (geometry + time incl. current traffic). */
+data class TrafficRoute(val points: List<GeoPoint>, val travelTimeSeconds: Double, val delaySeconds: Double)

@@ -6,7 +6,14 @@ import cz.fenixen.navigation.core.model.Place
 import cz.fenixen.navigation.core.model.Route
 import cz.fenixen.navigation.core.model.RouteOptions
 import cz.fenixen.navigation.core.model.RouteRequest
+import cz.fenixen.navigation.core.format.CzechFormat
+import cz.fenixen.navigation.core.model.IncidentCategory
+import cz.fenixen.navigation.core.model.RouteIncident
 import cz.fenixen.navigation.core.model.RouteTraffic
+import cz.fenixen.navigation.core.model.TrafficIncident
+import cz.fenixen.navigation.core.geo.Polyline
+import cz.fenixen.navigation.core.traffic.IncidentTexts
+import cz.fenixen.navigation.core.traffic.RouteMatching
 import cz.fenixen.navigation.core.routing.RoutingException
 import cz.fenixen.navigation.core.routing.RoutingProvider
 import cz.fenixen.navigation.core.traffic.TrafficProvider
@@ -47,7 +54,13 @@ sealed interface NavigationState {
         val isRerouting: Boolean = false,
         /** Last reroute attempt failed (offline?) – we keep guiding on the old route. */
         val rerouteFailed: Boolean = false,
+        /** Live incidents ahead on the route, nearest first. */
+        val incidents: List<RouteIncident> = emptyList(),
+        /** A traffic-aware faster route waiting for the driver's decision. */
+        val fasterRoute: FasterRouteOffer? = null,
     ) : NavigationState {
+        /** Nearest incident still ahead of the car. */
+        val nextIncident: RouteIncident? get() = incidents.firstOrNull { it.distanceAlong >= (progress?.distanceAlong ?: 0.0) - 20 }
         val upcoming: Maneuver? get() = progress?.let { route.maneuvers[it.upcomingManeuverIndex] }
 
         /** Maneuver after the upcoming one – shown as "Potom ..." when it comes quickly. */
@@ -61,6 +74,8 @@ sealed interface NavigationState {
 
 enum class FailureReason { NO_LOCATION, NO_ROUTE, NETWORK, SERVER }
 
+data class FasterRouteOffer(val id: Int, val route: Route, val savingSeconds: Double, val createdAtMillis: Long)
+
 sealed interface NavigationEvent {
     data class Speak(val text: String) : NavigationEvent
     data object NavigationStarted : NavigationEvent
@@ -70,6 +85,7 @@ sealed interface NavigationEvent {
     data object NavigationEnded : NavigationEvent
     data class SpeedLimitExceeded(val limitKph: Int) : NavigationEvent
     data class TrafficUpdated(val delaySeconds: Double) : NavigationEvent
+    data class FasterRouteFound(val offer: FasterRouteOffer) : NavigationEvent
 }
 
 /**
@@ -112,6 +128,11 @@ class NavigationSession(
     /** Router-based (uncorrected) progress of the last fix – baseline for traffic factor. */
     private var lastRawProgress: RouteProgress? = null
     private var announcedDelaySeconds = 0.0
+    /** Raw incidents from the last fetch (re-matched when the route changes). */
+    private var rawIncidents: List<TrafficIncident> = emptyList()
+    private val announcedIncidents = HashSet<String>()
+    private var fasterRouteDismissedUntil = 0L
+    private var offerCounter = 0
     private var lastRerouteAt = Long.MIN_VALUE / 2
     /** Bumped for every new active route so stale async results can be detected. */
     private var routeGeneration = 0
@@ -194,8 +215,11 @@ class NavigationSession(
         val limit = result.progress.speedLimitKph
         val speedKph = fix.speedMps?.times(3.6)
         val speeding = limit != null && speedKph != null && speedKph > limit + speedingToleranceKph
-        val updated = nav.copy(progress = result.progress, speedMps = fix.speedMps, isSpeeding = speeding)
+        // Nabídka rychlejší trasy platí jen chvíli – pak už může být odbočka za námi.
+        val offer = nav.fasterRoute?.takeIf { clock() - it.createdAtMillis < FASTER_ROUTE_OFFER_MS }
+        val updated = nav.copy(progress = result.progress, speedMps = fix.speedMps, isSpeeding = speeding, fasterRoute = offer)
         _state.value = updated
+        announceIncident(updated, fix.speedMps)
         if (speeding && !nav.isSpeeding) _events.tryEmit(NavigationEvent.SpeedLimitExceeded(limit))
 
         when (result.status) {
@@ -214,10 +238,36 @@ class NavigationSession(
         previewTrafficJob?.cancel()
         eta = EtaEstimator()
         announcedDelaySeconds = route.traffic?.delaySeconds ?: 0.0
+        rawIncidents = emptyList()
+        announcedIncidents.clear()
+        fasterRouteDismissedUntil = 0L
         activateRoute(route)
         _state.value = NavigationState.Navigating(destination, route)
         _events.tryEmit(NavigationEvent.NavigationStarted)
         _lastFix.value?.let(::onLocation)
+    }
+
+    /** Driver accepted the faster route (button on phone / alert in the car). */
+    fun acceptFasterRoute() {
+        val nav = _state.value as? NavigationState.Navigating ?: return
+        val offer = nav.fasterRoute ?: return
+        activateRoute(offer.route)
+        _state.value = nav.copy(
+            route = offer.route,
+            progress = null,
+            fasterRoute = null,
+            incidents = RouteMatching.matchIncidents(offer.route, 0.0, rawIncidents),
+        )
+        speak("Trasa změněna.")
+        _events.tryEmit(NavigationEvent.Rerouted)
+        _lastFix.value?.let(::onLocation)
+    }
+
+    fun dismissFasterRoute() {
+        val nav = _state.value as? NavigationState.Navigating ?: return
+        if (nav.fasterRoute == null) return
+        fasterRouteDismissedUntil = clock() + FASTER_ROUTE_SNOOZE_MS
+        _state.value = nav.copy(fasterRoute = null)
     }
 
     private fun activateRoute(route: Route) {
@@ -247,6 +297,8 @@ class NavigationSession(
                     null // doprava je bonus – bez ní jedeme dál podle routeru
                 }
                 if (result != null && generation == routeGeneration) applyTraffic(result, raw)
+                if (generation == routeGeneration) refreshIncidents(provider)
+                if (generation == routeGeneration) checkFasterRoute(provider, generation)
                 delay(trafficRefreshMs)
             }
         }
@@ -270,6 +322,76 @@ class NavigationSession(
         } else if (delay < announcedDelaySeconds - TRAFFIC_ANNOUNCE_STEP_S) {
             announcedDelaySeconds = delay // kolona se rozpustila → případnou další zase ohlásíme
         }
+    }
+
+    private suspend fun refreshIncidents(provider: TrafficProvider) {
+        val tracker = tracker ?: return
+        val from = lastRawProgress?.distanceAlong ?: 0.0
+        val fetched = try {
+            RouteMatching.boundsAhead(tracker.route, from).flatMap { provider.incidents(it) }.distinctBy { it.id }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return
+        }
+        rawIncidents = fetched
+        val current = _state.value as? NavigationState.Navigating ?: return
+        _state.value = current.copy(incidents = RouteMatching.matchIncidents(current.route, from, fetched))
+    }
+
+    /**
+     * Asks the traffic router for the fastest route from here. If it is clearly faster and takes
+     * different roads, Valhalla computes it (via pass-through points on TomTom's path) so we keep
+     * Czech instructions, and the driver gets an offer.
+     */
+    private suspend fun checkFasterRoute(provider: TrafficProvider, generation: Int) {
+        val nav = _state.value as? NavigationState.Navigating ?: return
+        val progress = nav.progress ?: return
+        val fix = _lastFix.value ?: return
+        if (nav.isRerouting || nav.fasterRoute != null || clock() < fasterRouteDismissedUntil) return
+        if (progress.distanceRemaining < FASTER_ROUTE_MIN_REMAINING_M) return
+        try {
+            val best = provider.fastestRoute(fix.point, fix.movingBearing(), nav.destination.point, routeOptions) ?: return
+            val current = progress.durationRemaining
+            val saving = current - best.travelTimeSeconds
+            if (saving < maxOf(FASTER_ROUTE_MIN_SAVING_S, current * 0.1)) return
+            val route = tracker?.route ?: return
+            if (RouteMatching.overlap(best.points, route.geometry, progress.distanceAlong) > 0.85) return
+            val via = RouteMatching.viaPoints(best.points, route, progress.distanceAlong)
+            if (via.isEmpty()) return
+            val candidate = routing.route(
+                RouteRequest(fix.point, nav.destination.point, fix.movingBearing(), routeOptions.copy(alternatives = 0), via),
+            ).firstOrNull() ?: return
+            // Valhalla musí opravdu jet tudy, kudy TomTom (jinak by nabídka lhala).
+            if (RouteMatching.overlap(candidate.geometry.points, Polyline(best.points), 0.0) < 0.7) return
+            if (generation != routeGeneration) return
+            val latest = _state.value as? NavigationState.Navigating ?: return
+            val offer = FasterRouteOffer(++offerCounter, candidate, saving, clock())
+            _state.value = latest.copy(fasterRoute = offer)
+            _events.tryEmit(NavigationEvent.FasterRouteFound(offer))
+            val minutes = (saving / 60).roundToInt()
+            speak("Je k dispozici rychlejší trasa, ušetříte asi $minutes ${minutesWord(minutes)}.")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Bez nabídky – současná trasa pořád platí.
+        }
+    }
+
+    /** Voice warning for the nearest serious incident, once per incident, ~1.5–4 km ahead. */
+    private fun announceIncident(nav: NavigationState.Navigating, speedMps: Double?) {
+        val progress = nav.progress ?: return
+        val next = nav.nextIncident ?: return
+        val incident = next.incident
+        if (incident.id in announcedIncidents || incident.category !in ANNOUNCED_CATEGORIES) return
+        val distance = next.distanceAlong - progress.distanceAlong
+        val window = ((speedMps ?: 15.0) * 90).coerceIn(1_500.0, 4_000.0)
+        if (distance > window || distance < 0) return
+        announcedIncidents += incident.id
+        val what = IncidentTexts.spoken(incident.category)
+        val delay = incident.delaySeconds?.let { (it / 60).roundToInt() }?.takeIf { it >= 2 }
+        val tail = delay?.let { " Zdržení asi $it ${minutesWord(it)}." }.orEmpty()
+        speak("Za ${CzechFormat.spokenDistance(distance)} $what.$tail")
     }
 
     /** Preview: traffic-aware times for every alternative (in parallel). */
@@ -313,7 +435,14 @@ class NavigationSession(
                     ?: throw RoutingException(RoutingException.Kind.NO_ROUTE, "No route")
                 val current = _state.value as? NavigationState.Navigating ?: return@launch
                 activateRoute(newRoute)
-                _state.value = current.copy(route = newRoute, progress = null, isRerouting = false, rerouteFailed = false)
+                _state.value = current.copy(
+                    route = newRoute,
+                    progress = null,
+                    isRerouting = false,
+                    rerouteFailed = false,
+                    fasterRoute = null,
+                    incidents = RouteMatching.matchIncidents(newRoute, 0.0, rawIncidents),
+                )
                 _events.tryEmit(NavigationEvent.Rerouted)
                 _lastFix.value?.let(::onLocation)
             } catch (e: CancellationException) {
@@ -379,6 +508,14 @@ class NavigationSession(
     private companion object {
         const val TRAFFIC_ANNOUNCE_MIN_S = 300.0
         const val TRAFFIC_ANNOUNCE_STEP_S = 180.0
+        const val FASTER_ROUTE_MIN_SAVING_S = 300.0
+        const val FASTER_ROUTE_MIN_REMAINING_M = 5_000.0
+        const val FASTER_ROUTE_OFFER_MS = 60_000L
+        const val FASTER_ROUTE_SNOOZE_MS = 10 * 60_000L
+        val ANNOUNCED_CATEGORIES = setOf(
+            IncidentCategory.ACCIDENT, IncidentCategory.JAM, IncidentCategory.ROAD_CLOSED, IncidentCategory.LANE_CLOSED,
+            IncidentCategory.ROAD_WORKS, IncidentCategory.BROKEN_DOWN_VEHICLE, IncidentCategory.DANGER,
+        )
     }
 
     private fun RoutingException.Kind.toMessage() = when (this) {
