@@ -93,3 +93,32 @@ class CameraControllerTest {
         assertEquals(0.0, cmd.tilt)
     }
 }
+
+class CameraAnchorTest {
+    /** Camera centre for given padding = middle of the padded rectangle. */
+    private fun carY(height: Int, padTop: Double, padBottom: Int) = (padTop + height - padBottom) / 2
+
+    @Test
+    fun `heading up puts the car in the lower third regardless of banner size`() {
+        val h = 2_400
+        for (top in listOf(300, 600)) {
+            val pad = CameraAnchor.paddingTop(h, obstructedTop = top, obstructedBottom = 300, headingUp = true)
+            assertEquals(h * 0.70, carY(h, pad, 300), 1.0, "banner $top px")
+        }
+    }
+
+    @Test
+    fun `car stays above the dock even when the dock is tall`() {
+        val h = 2_400
+        val pad = CameraAnchor.paddingTop(h, obstructedTop = 400, obstructedBottom = 1_000, headingUp = true, minGapPx = 150)
+        val y = carY(h, pad, 1_000)
+        assertTrue(y <= h - 1_000 - 150 + 1, "car at $y hidden behind the dock")
+        assertTrue(y >= 400, "car under the banner")
+    }
+
+    @Test
+    fun `north up centres the car in the free area`() {
+        val pad = CameraAnchor.paddingTop(2_400, obstructedTop = 400, obstructedBottom = 300, headingUp = false)
+        assertEquals((400 + 2_400 - 300) / 2.0, carY(2_400, pad, 300), 0.5)
+    }
+}

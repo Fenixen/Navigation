@@ -18,6 +18,7 @@ import cz.fenixen.navigation.core.model.IncidentCategory
 import cz.fenixen.navigation.core.model.LocationFix
 import cz.fenixen.navigation.core.model.Route
 import cz.fenixen.navigation.core.model.TrafficLevel
+import cz.fenixen.navigation.core.navigation.CameraAnchor
 import cz.fenixen.navigation.core.navigation.CameraCommand
 import cz.fenixen.navigation.core.navigation.CameraController
 import cz.fenixen.navigation.core.navigation.FollowMode
@@ -738,10 +739,10 @@ class NavMapController(
      */
     private fun targetPadding(): DoubleArray {
         val v = viewport
-        val free = (mapView.height - v.top - v.bottom).coerceAtLeast(0).toDouble()
         val headingUp = camera.state.value.orientation == MapOrientation.HEADING_UP
-        val extraTop = if (headingUp) free * CAR_ANCHOR_SHIFT else 0.0
-        return doubleArrayOf(v.left.toDouble(), v.top + extraTop, v.right.toDouble(), v.bottom.toDouble())
+        val gap = (72 * context.resources.displayMetrics.density).toInt()
+        val top = CameraAnchor.paddingTop(mapView.height, v.top, v.bottom, headingUp, minGapPx = gap)
+        return doubleArrayOf(v.left.toDouble(), top, v.right.toDouble(), v.bottom.toDouble())
     }
 
     private fun updatePuckLayer() {
@@ -835,8 +836,6 @@ class NavMapController(
         val ACCENT = "#FF8000".toColorInt()
         const val WHITE = 0xFFFFFFFF.toInt()
 
-        /** 0.40 → the car sits at ~70 % of the free height (lower third). */
-        const val CAR_ANCHOR_SHIFT = 0.40
         const val SMOOTHING_MS = 260.0
         const val RESUME_MS = 450L
     }

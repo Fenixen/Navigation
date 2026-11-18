@@ -162,7 +162,7 @@ private fun PortraitHud(
         ) { TopContent(state, places, hasPermission, hud) }
 
         Column(
-            Modifier.align(Alignment.BottomCenter).fillMaxWidth().onSizeChanged { bottomPx = it.height },
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             FasterRoute(state, hud, Modifier.padding(horizontal = 10.dp))
@@ -171,7 +171,11 @@ private fun PortraitHud(
                 FollowArea(camera, hud, Modifier.align(Alignment.BottomCenter))
                 Controls(camera, hud, state is NavigationState.Navigating, Modifier.align(Alignment.BottomEnd))
             }
-            BottomContent(state, settings, hud, Modifier.navigationBarsPadding().padding(horizontal = 10.dp, vertical = 8.dp))
+            // Měříme JEN spodní lištu/panel – plovoucí tlačítka mapy a tachometr nejsou „zakrytá mapa“
+            // (dřív se započítávaly a auto pak skončilo uprostřed obrazovky).
+            Box(Modifier.fillMaxWidth().onSizeChanged { bottomPx = it.height }) {
+                BottomContent(state, settings, hud, Modifier.navigationBarsPadding().padding(horizontal = 10.dp, vertical = 8.dp))
+            }
         }
     }
 }

@@ -39,6 +39,29 @@ data class CameraState(
     val effectiveZoom: Double = 16.5,
 )
 
+/**
+ * Where the car sits on screen. The map camera centres on the middle of its padded rectangle,
+ * so to put the car at height y we need: (padTop + height − padBottom) / 2 = y.
+ */
+object CameraAnchor {
+    /** Car at 70 % of the screen height from the top = lower third, lots of road visible ahead. */
+    const val HEADING_UP_SCREEN_Y = 0.70
+
+    /**
+     * Top padding (px) for the camera. [obstructedTop]/[obstructedBottom] are heights covered by
+     * banners/docks; the car stays inside the free area between them.
+     */
+    fun paddingTop(height: Int, obstructedTop: Int, obstructedBottom: Int, headingUp: Boolean, minGapPx: Int = 0): Double {
+        if (height <= 0) return obstructedTop.toDouble()
+        val freeTop = obstructedTop.toDouble()
+        val freeBottom = (height - obstructedBottom).toDouble()
+        if (freeBottom <= freeTop) return freeTop
+        if (!headingUp) return freeTop // sever nahoře → auto uprostřed volné plochy
+        val y = (height * HEADING_UP_SCREEN_Y).coerceIn((freeTop + freeBottom) / 2, freeBottom - minGapPx)
+        return (2 * y - height + obstructedBottom).coerceAtLeast(freeTop)
+    }
+}
+
 sealed interface CameraCommand {
     /** Move/animate the camera to follow the car. */
     data class Follow(
