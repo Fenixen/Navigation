@@ -12,7 +12,9 @@ import cz.fenixen.navigation.core.traffic.TomTomTrafficProvider
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
+import cz.fenixen.navigation.data.AvoidRepository
 import cz.fenixen.navigation.data.DisplayKind
+import kotlinx.coroutines.flow.drop
 import cz.fenixen.navigation.data.PlacesRepository
 import cz.fenixen.navigation.data.SettingsRepository
 import cz.fenixen.navigation.location.LocationCoordinator
@@ -44,6 +46,7 @@ class AppGraph(app: Application) {
 
     val settings = SettingsRepository(app, appScope)
     val places = PlacesRepository(app, appScope)
+    val avoids = AvoidRepository(app)
 
     val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(10, TimeUnit.SECONDS)
@@ -79,6 +82,11 @@ class AppGraph(app: Application) {
     val carCamera = CameraController(onZoomLockChanged = { settings.setZoomLock(DisplayKind.CAR, it) })
 
     init {
+        appScope.launch {
+            // Nahlášené uzavírky přežijí restart; každá změna se hned uloží.
+            session.restoreAvoids(avoids.load())
+            session.avoidAreas.drop(1).collect { avoids.save(it) }
+        }
         appScope.launch {
             val s = settings.load()
             phoneCamera.restore(s.phoneZoomLock, s.orientation)

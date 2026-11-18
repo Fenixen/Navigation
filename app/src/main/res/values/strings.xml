@@ -61,6 +61,12 @@
     <string name="traffic_live_hint">Přesnější čas příjezdu, obarvení kolon na trase a hlášení zdržení. Zdarma klíč na developer.tomtom.com (2 500 dotazů denně).</string>
     <string name="traffic_on_map">Zobrazit provoz na mapě</string>
     <string name="tomtom_key">TomTom API klíč</string>
+    <string name="report_closure">Uzavírka před námi</string>
+    <string name="avoids_closures">Objíždí uzavírku</string>
+    <string name="traffic_status">Stav připojení</string>
+    <string name="traffic_test">Otestovat klíč</string>
+    <string name="manual_closures">Nahlášené uzavírky</string>
+    <string name="clear">Smazat</string>
     <string name="osm_copyright">© OpenStreetMap</string>
     <string name="attribution">Mapa © OpenStreetMap, OpenFreeMap · Trasy Valhalla · Hledání Photon · Doprava TomTom</string>
     <string name="avoid">Vyhnout se</string>

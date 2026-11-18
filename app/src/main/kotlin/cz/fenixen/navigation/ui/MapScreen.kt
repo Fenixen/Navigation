@@ -169,7 +169,7 @@ private fun PortraitHud(
             Box(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
                 SpeedArea(state, speedMps, Modifier.align(Alignment.BottomStart))
                 FollowArea(camera, hud, Modifier.align(Alignment.BottomCenter))
-                Controls(camera, hud, Modifier.align(Alignment.BottomEnd))
+                Controls(camera, hud, state is NavigationState.Navigating, Modifier.align(Alignment.BottomEnd))
             }
             BottomContent(state, settings, hud, Modifier.navigationBarsPadding().padding(horizontal = 10.dp, vertical = 8.dp))
         }
@@ -203,7 +203,7 @@ private fun WideHud(
             BottomContent(state, settings, hud, Modifier)
         }
         FollowArea(camera, hud, Modifier.align(Alignment.BottomCenter).padding(start = panel))
-        Controls(camera, hud, Modifier.align(Alignment.BottomEnd))
+        Controls(camera, hud, state is NavigationState.Navigating, Modifier.align(Alignment.BottomEnd))
     }
 }
 
@@ -260,7 +260,8 @@ private fun FollowArea(camera: CameraState, hud: HudCallbacks, modifier: Modifie
 }
 
 @Composable
-private fun Controls(camera: CameraState, hud: HudCallbacks, modifier: Modifier) {
+private fun Controls(camera: CameraState, hud: HudCallbacks, navigating: Boolean, modifier: Modifier) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     MapControls(
         camera = camera,
         onZoomIn = { hud.controller()?.zoomIn() },
@@ -273,6 +274,14 @@ private fun Controls(camera: CameraState, hud: HudCallbacks, modifier: Modifier)
             hud.vm.setOrientationFromCamera()
         },
         modifier = modifier,
+        onReportClosure = if (navigating) {
+            {
+                hud.vm.reportClosure()
+                android.widget.Toast.makeText(context, "Úsek před vámi zablokován, hledám objížďku", android.widget.Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            null
+        },
     )
 }
 

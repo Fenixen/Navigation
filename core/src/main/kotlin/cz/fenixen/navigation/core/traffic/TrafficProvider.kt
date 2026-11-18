@@ -13,6 +13,10 @@ import cz.fenixen.navigation.core.model.TrafficRoute
 import cz.fenixen.navigation.core.model.TrafficSpan
 import cz.fenixen.navigation.core.routing.awaitString
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -46,6 +50,11 @@ interface TrafficProvider {
 
 class TrafficException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
+/** Health of the traffic connection – shown in settings so a bad API key is obvious. */
+data class TrafficStatus(val lastOkMillis: Long? = null, val lastError: String? = null, val lastErrorMillis: Long? = null) {
+    val isHealthy: Boolean get() = lastOkMillis != null && (lastErrorMillis == null || lastOkMillis >= lastErrorMillis)
+}
+
 /**
  * TomTom Routing API in "route reconstruction" mode: we send *our* route as supporting points and
  * TomTom returns live travel time, total delay and the congested sections on exactly that route.
@@ -58,8 +67,22 @@ class TomTomTrafficProvider(
     private val apiKey: () -> String?,
     private val clock: () -> Long = System::currentTimeMillis,
 ) : TrafficProvider {
+    private val _status = MutableStateFlow(TrafficStatus())
+    val status: StateFlow<TrafficStatus> = _status.asStateFlow()
 
-    override suspend fun traffic(route: Route, fromDistance: Double): RouteTraffic {
+    /** Records success / a human-readable error for every TomTom call. */
+    private suspend fun <T> tracked(block: suspend () -> T): T = try {
+        block().also { _status.update { s -> s.copy(lastOkMillis = clock()) } }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        _status.update { s -> s.copy(lastError = TomTomTraffic.explain(e), lastErrorMillis = clock()) }
+        throw e
+    }
+
+    override suspend fun traffic(route: Route, fromDistance: Double): RouteTraffic = tracked { trafficImpl(route, fromDistance) }
+
+    private suspend fun trafficImpl(route: Route, fromDistance: Double): RouteTraffic {
         val key = apiKey()?.takeIf { it.isNotBlank() } ?: throw TrafficException("Missing TomTom API key")
         val points = TomTomTraffic.supportingPoints(route.geometry, fromDistance)
         val first = points.first()
@@ -81,12 +104,14 @@ class TomTomTrafficProvider(
         } catch (e: IOException) {
             throw TrafficException("TomTom unreachable: ${e.message}", e)
         }
-        if (result.code !in 200..299) throw TrafficException("TomTom HTTP ${result.code}")
+        if (result.code !in 200..299) throw TrafficException("HTTP ${result.code}")
         val remainingLength = route.geometry.length - fromDistance
         return TomTomTraffic.parse(result.body, fromDistance, remainingLength, clock())
     }
 
-    override suspend fun incidents(bounds: GeoBounds): List<TrafficIncident> {
+    override suspend fun incidents(bounds: GeoBounds): List<TrafficIncident> = tracked { incidentsImpl(bounds) }
+
+    private suspend fun incidentsImpl(bounds: GeoBounds): List<TrafficIncident> {
         val url = "https://api.tomtom.com/traffic/services/5/incidentDetails".toHttpUrl().newBuilder()
             .addQueryParameter("key", key())
             .addQueryParameter(
@@ -100,7 +125,10 @@ class TomTomTrafficProvider(
         return TomTomTraffic.parseIncidents(get(url.toString()))
     }
 
-    override suspend fun fastestRoute(origin: GeoPoint, bearing: Double?, destination: GeoPoint, options: RouteOptions): TrafficRoute? {
+    override suspend fun fastestRoute(origin: GeoPoint, bearing: Double?, destination: GeoPoint, options: RouteOptions): TrafficRoute? =
+        tracked { fastestRouteImpl(origin, bearing, destination, options) }
+
+    private suspend fun fastestRouteImpl(origin: GeoPoint, bearing: Double?, destination: GeoPoint, options: RouteOptions): TrafficRoute? {
         val locations = String.format(Locale.ROOT, "%.6f,%.6f:%.6f,%.6f", origin.lat, origin.lon, destination.lat, destination.lon)
         val url = "https://api.tomtom.com/routing/1/calculateRoute/$locations/json".toHttpUrl().newBuilder()
             .addQueryParameter("key", key())
@@ -127,7 +155,7 @@ class TomTomTrafficProvider(
         } catch (e: IOException) {
             throw TrafficException("TomTom unreachable: ${e.message}", e)
         }
-        if (result.code !in 200..299) throw TrafficException("TomTom HTTP ${result.code}")
+        if (result.code !in 200..299) throw TrafficException("HTTP ${result.code}")
         return result.body
     }
 
@@ -201,6 +229,16 @@ internal object TomTomTraffic {
             spans = spans,
             fetchedAtMillis = now,
         )
+    }
+
+    fun explain(e: Exception): String = when {
+        e.message == "Missing TomTom API key" -> "Chybí API klíč"
+        e.message == "HTTP 403" -> "Klíč odmítnut (HTTP 403) – zkontroluj ho, příp. povolená API v portálu TomTom"
+        e.message == "HTTP 401" -> "Neplatný klíč (HTTP 401)"
+        e.message == "HTTP 429" -> "Překročen denní limit dotazů (HTTP 429)"
+        e.message?.startsWith("HTTP ") == true -> "Server TomTom vrátil ${e.message}"
+        e.message?.startsWith("TomTom unreachable") == true -> "TomTom není dostupný – zkontroluj připojení"
+        else -> "Neočekávaná odpověď TomTomu"
     }
 
     /** Only what we need from the Incident Details v5 response. */

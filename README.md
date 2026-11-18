@@ -23,6 +23,7 @@ Hlavní důvod existence: **zoom, který si nastavíš, platí napořád.** Žá
 | Rychlost | Tachometr s prstencem k limitu + česká značka limitu (data OSM), červený při překročení |
 | **Živá doprava** | TomTom: kolony obarvené přímo na trase, provoz na mapě, čas s dopravou v náhledu, hlášení „zdržení asi 15 minut“ |
 | **Dopravní události** | Nehody, uzavírky, práce, porouchaná auta – ikony na mapě, upozornění v HUD a hlas „Za 2 kilometry je nehoda. Zdržení asi 9 minut.“ Jen na *tvé* straně dálnice (kontrola směru). |
+| **Uzavírky** | Uzavírky z TomTomu se Valhalle zakážou (`exclude_locations`) už při plánování i za jízdy (okamžitý přepočet). Tlačítko ⛔ „Uzavírka před námi“ zablokuje úsek ručně na 14 dní – pro uzavírky, o kterých TomTom neví. |
 | **Rychlejší trasa** | Každé 3 minuty se ověří nejrychlejší trasa s provozem; ušetří-li ≥ 5 min, přijde nabídka (telefon: karta, auto: upozornění). Valhalla ji přepočítá přes průjezdní body, takže pokyny zůstanou česky. |
 | **ETA** | Časy routeru × doprava × naučené tempo jízdy (viz níže) – už ne nadsazené |
 | Poloha | Vlastní ukazatel (oranžový pickup), plynulá animace 60+ fps, auto ve **spodní třetině** obrazovky, ve stoji se nehýbe |
@@ -58,7 +59,8 @@ a vrátí aktuální čas jízdy, zdržení a úseky s kolonou přesně na ní.
 3. Během navigace se každé 3 minuty obnoví doprava na trase, události (Incident Details API) a kontrola rychlejší
    trasy – dohromady zhruba 60–80 dotazů za hodinu jízdy.
 
-Bez klíče appka funguje dál, jen bez dopravy.
+Bez klíče appka funguje dál, jen bez dopravy. V *Nastavení → Živá doprava → Stav připojení* vidíš, jestli klíč
+funguje (OK s časem posledního úspěchu, nebo konkrétní chyba – např. odmítnutý klíč nebo limit).
 
 ## Proč už ETA není nadsazené
 

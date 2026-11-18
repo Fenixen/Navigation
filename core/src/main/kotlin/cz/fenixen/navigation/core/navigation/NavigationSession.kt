@@ -7,7 +7,9 @@ import cz.fenixen.navigation.core.model.Route
 import cz.fenixen.navigation.core.model.RouteOptions
 import cz.fenixen.navigation.core.model.RouteRequest
 import cz.fenixen.navigation.core.format.CzechFormat
+import cz.fenixen.navigation.core.model.AvoidArea
 import cz.fenixen.navigation.core.model.IncidentCategory
+import cz.fenixen.navigation.core.model.TrafficLevel
 import cz.fenixen.navigation.core.model.RouteIncident
 import cz.fenixen.navigation.core.model.RouteTraffic
 import cz.fenixen.navigation.core.model.TrafficIncident
@@ -41,6 +43,8 @@ sealed interface NavigationState {
         val destination: Place,
         val routes: List<Route>,
         val selectedIndex: Int = 0,
+        /** How many known closures the routes go around. */
+        val avoidedClosures: Int = 0,
     ) : NavigationState {
         val selected: Route get() = routes[selectedIndex]
     }
@@ -86,6 +90,7 @@ sealed interface NavigationEvent {
     data class SpeedLimitExceeded(val limitKph: Int) : NavigationEvent
     data class TrafficUpdated(val delaySeconds: Double) : NavigationEvent
     data class FasterRouteFound(val offer: FasterRouteOffer) : NavigationEvent
+    data object ClosureAvoided : NavigationEvent
 }
 
 /**
@@ -114,6 +119,10 @@ class NavigationSession(
 
     private val _lastFix = MutableStateFlow<LocationFix?>(null)
     val lastFix: StateFlow<LocationFix?> = _lastFix.asStateFlow()
+
+    /** Closed sections the router avoids (persisted by the app so manual reports survive restarts). */
+    private val _avoidAreas = MutableStateFlow<List<AvoidArea>>(emptyList())
+    val avoidAreas: StateFlow<List<AvoidArea>> = _avoidAreas.asStateFlow()
 
     /** Avoid tolls / highways / ferries – applied to the next routing request. */
     var routeOptions: RouteOptions = RouteOptions()
@@ -148,13 +157,21 @@ class NavigationSession(
         _state.value = NavigationState.Planning(destination, autoStart)
         routingJob = scope.launch {
             try {
-                val routes = routing.route(RouteRequest(origin.point, destination.point, origin.movingBearing(), routeOptions))
+                val request = RouteRequest(origin.point, destination.point, origin.movingBearing(), routeOptions)
+                var routes = routeAvoiding(request)
+                // Uzavírky z živé dopravy: najdeme je na spočítané trase a trasu přepočítáme bez nich
+                // (2 kola – objížďka může vést přes další uzavírku).
+                repeat(2) {
+                    val best = routes.firstOrNull() ?: return@repeat
+                    if (!avoidClosuresOn(best, 0.0)) return@repeat
+                    routes = routeAvoiding(request)
+                }
                 if (routes.isEmpty()) {
                     _state.value = NavigationState.Failed(destination, FailureReason.NO_ROUTE, "Trasu se nepodařilo najít.")
                 } else if (autoStart) {
                     beginNavigation(destination, routes.first())
                 } else {
-                    val preview = NavigationState.Preview(destination, routes)
+                    val preview = NavigationState.Preview(destination, routes, avoidedClosures = activeAvoids().size)
                     _state.value = preview
                     fetchPreviewTraffic(preview)
                 }
@@ -238,13 +255,108 @@ class NavigationSession(
         previewTrafficJob?.cancel()
         eta = EtaEstimator()
         announcedDelaySeconds = route.traffic?.delaySeconds ?: 0.0
-        rawIncidents = emptyList()
         announcedIncidents.clear()
         fasterRouteDismissedUntil = 0L
         activateRoute(route)
         _state.value = NavigationState.Navigating(destination, route)
         _events.tryEmit(NavigationEvent.NavigationStarted)
         _lastFix.value?.let(::onLocation)
+    }
+
+    /**
+     * Driver says "the road ahead is closed" (barrier, local road works TomTom doesn't know).
+     * Blocks the next few hundred metres for [MANUAL_AVOID_MS] and finds a detour right away.
+     */
+    fun reportClosureAhead() {
+        val nav = _state.value as? NavigationState.Navigating ?: return
+        val progress = nav.progress ?: return
+        val g = nav.route.geometry
+        // Začátek až kus před autem – zákaz hrany, na které stojíme, by Valhalle znemožnil start.
+        val from = progress.distanceAlong + 40
+        val nextTurn = nav.route.maneuvers.firstOrNull { it.distanceFromStart > from + 60 }?.distanceFromStart
+        val to = minOf(nextTurn ?: Double.MAX_VALUE, from + 400, g.length - 10)
+        if (to <= from) return
+        val area = AvoidArea(
+            id = "manual-${clock()}",
+            points = RouteMatching.avoidPoints(g.slice(from, to)),
+            expiresAtMillis = clock() + MANUAL_AVOID_MS,
+            source = AvoidArea.Source.MANUAL,
+            label = nav.upcoming?.primaryName ?: nav.route.maneuvers.getOrNull(progress.upcomingManeuverIndex - 1)?.primaryName,
+        )
+        addAvoid(area)
+        closureReroute("Díky, hledám objížďku.")
+    }
+
+    /** Restores persisted avoid areas (expired ones are dropped). */
+    fun restoreAvoids(areas: List<AvoidArea>) {
+        val now = clock()
+        _avoidAreas.value = (areas + _avoidAreas.value).filter { it.expiresAtMillis > now }.distinctBy { it.id }
+    }
+
+    fun clearAvoids(source: AvoidArea.Source? = null) {
+        _avoidAreas.value = if (source == null) emptyList() else _avoidAreas.value.filter { it.source != source }
+    }
+
+    private fun activeAvoids(): List<AvoidArea> {
+        val now = clock()
+        return _avoidAreas.value.filter { it.expiresAtMillis > now }
+    }
+
+    private fun addAvoid(area: AvoidArea): Boolean {
+        if (area.points.isEmpty() || _avoidAreas.value.any { it.id == area.id }) return false
+        _avoidAreas.value = activeAvoids() + area
+        return true
+    }
+
+    /** Closures (TomTom ROAD_CLOSED incidents) on [route] ahead of [from] → avoid areas. Returns true if any were new. */
+    private suspend fun avoidClosuresOn(route: Route, from: Double): Boolean {
+        val provider = traffic() ?: return false
+        val incidents = try {
+            RouteMatching.boundsAhead(route, from, aheadM = PLANNING_CLOSURE_LOOKAHEAD_M).flatMap { provider.incidents(it) }.distinctBy { it.id }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return false
+        }
+        rawIncidents = incidents
+        return addClosureAvoids(RouteMatching.matchIncidents(route, from, incidents))
+    }
+
+    private fun addClosureAvoids(matched: List<RouteIncident>): Boolean =
+        matched.filter { it.incident.category == IncidentCategory.ROAD_CLOSED }
+            .map { ri ->
+                AvoidArea(
+                    id = "tt-${ri.incident.id}",
+                    points = RouteMatching.avoidPoints(ri.incident.geometry),
+                    expiresAtMillis = clock() + TRAFFIC_AVOID_MS,
+                    source = AvoidArea.Source.TRAFFIC,
+                    label = ri.incident.roadNumbers.firstOrNull(),
+                )
+            }
+            .count(::addAvoid) > 0
+
+    /** Reroute now (no cooldown) because the route goes through a closure. */
+    private fun closureReroute(message: String) {
+        val nav = _state.value as? NavigationState.Navigating ?: return
+        val fix = _lastFix.value ?: return
+        speak(message)
+        _events.tryEmit(NavigationEvent.ClosureAvoided)
+        reroute(nav, fix, force = true)
+    }
+
+    /**
+     * Routing with the active closures. If the closures make the destination unreachable (the
+     * destination itself is behind a barrier), route without them rather than fail.
+     */
+    private suspend fun routeAvoiding(request: RouteRequest): List<Route> {
+        val avoid = activeAvoids().flatMap { it.points }.take(MAX_AVOID_POINTS)
+        if (avoid.isEmpty()) return routing.route(request)
+        return try {
+            routing.route(request.copy(avoid = avoid))
+        } catch (e: RoutingException) {
+            if (e.kind != RoutingException.Kind.NO_ROUTE) throw e
+            routing.route(request)
+        }
     }
 
     /** Driver accepted the faster route (button on phone / alert in the car). */
@@ -306,6 +418,22 @@ class NavigationSession(
 
     private fun applyTraffic(result: RouteTraffic, raw: RouteProgress?) {
         val tracker = tracker ?: return
+        val from = raw?.distanceAlong ?: 0.0
+        val closedSpans = result.spans.filter { it.level == TrafficLevel.CLOSED && it.startDistance > from + 50 }
+        if (closedSpans.isNotEmpty()) {
+            val added = closedSpans.map { span ->
+                AvoidArea(
+                    id = "span-${tracker.route.id}-${span.startDistance.roundToInt()}",
+                    points = RouteMatching.avoidPoints(tracker.route.geometry.slice(span.startDistance, span.endDistance)),
+                    expiresAtMillis = clock() + TRAFFIC_AVOID_MS,
+                    source = AvoidArea.Source.TRAFFIC,
+                )
+            }.count(::addAvoid)
+            if (added > 0) {
+                closureReroute("Na trase je uzavírka, hledám objížďku.")
+                return
+            }
+        }
         val enriched = tracker.route.copy(traffic = result)
         tracker.replaceRouteData(enriched)
         val rawRemaining = raw?.durationRemaining ?: enriched.durationSeconds
@@ -336,7 +464,10 @@ class NavigationSession(
         }
         rawIncidents = fetched
         val current = _state.value as? NavigationState.Navigating ?: return
-        _state.value = current.copy(incidents = RouteMatching.matchIncidents(current.route, from, fetched))
+        val matched = RouteMatching.matchIncidents(current.route, from, fetched)
+        _state.value = current.copy(incidents = matched)
+        // Uzavírka před námi → hned objížďka (nečekáme, až do ní vjedeme).
+        if (addClosureAvoids(matched.filter { it.distanceAlong > from + 50 })) closureReroute("Na trase je uzavírka, hledám objížďku.")
     }
 
     /**
@@ -359,7 +490,7 @@ class NavigationSession(
             if (RouteMatching.overlap(best.points, route.geometry, progress.distanceAlong) > 0.85) return
             val via = RouteMatching.viaPoints(best.points, route, progress.distanceAlong)
             if (via.isEmpty()) return
-            val candidate = routing.route(
+            val candidate = routeAvoiding(
                 RouteRequest(fix.point, nav.destination.point, fix.movingBearing(), routeOptions.copy(alternatives = 0), via),
             ).firstOrNull() ?: return
             // Valhalla musí opravdu jet tudy, kudy TomTom (jinak by nabídka lhala).
@@ -416,10 +547,10 @@ class NavigationSession(
         }
     }
 
-    private fun reroute(nav: NavigationState.Navigating, fix: LocationFix) {
+    private fun reroute(nav: NavigationState.Navigating, fix: LocationFix, force: Boolean = false) {
         if (nav.isRerouting) return
         val now = clock()
-        if (now - lastRerouteAt < rerouteCooldownMs) return
+        if (!force && now - lastRerouteAt < rerouteCooldownMs) return
         lastRerouteAt = now
         _state.value = nav.copy(isRerouting = true)
         _events.tryEmit(NavigationEvent.RerouteStarted)
@@ -431,7 +562,7 @@ class NavigationSession(
                     originBearing = fix.movingBearing(),
                     options = routeOptions.copy(alternatives = 0),
                 )
-                val newRoute = routing.route(request).firstOrNull()
+                val newRoute = routeAvoiding(request).firstOrNull()
                     ?: throw RoutingException(RoutingException.Kind.NO_ROUTE, "No route")
                 val current = _state.value as? NavigationState.Navigating ?: return@launch
                 activateRoute(newRoute)
@@ -512,6 +643,10 @@ class NavigationSession(
         const val FASTER_ROUTE_MIN_REMAINING_M = 5_000.0
         const val FASTER_ROUTE_OFFER_MS = 60_000L
         const val FASTER_ROUTE_SNOOZE_MS = 10 * 60_000L
+        const val TRAFFIC_AVOID_MS = 3 * 60 * 60_000L
+        const val MANUAL_AVOID_MS = 14 * 24 * 60 * 60_000L
+        const val MAX_AVOID_POINTS = 45
+        const val PLANNING_CLOSURE_LOOKAHEAD_M = 200_000.0
         val ANNOUNCED_CATEGORIES = setOf(
             IncidentCategory.ACCIDENT, IncidentCategory.JAM, IncidentCategory.ROAD_CLOSED, IncidentCategory.LANE_CLOSED,
             IncidentCategory.ROAD_WORKS, IncidentCategory.BROKEN_DOWN_VEHICLE, IncidentCategory.DANGER,

@@ -40,7 +40,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import cz.fenixen.navigation.R
+import cz.fenixen.navigation.core.model.AvoidArea
 import cz.fenixen.navigation.core.navigation.MapOrientation
 import cz.fenixen.navigation.data.AppSettings
 import cz.fenixen.navigation.data.DisplayKind
@@ -75,6 +77,19 @@ fun SettingsScreen(settings: AppSettings, vm: MainViewModel, onToggleOrientation
                     )
                     SwitchRow(stringResource(R.string.traffic_on_map), settings.trafficOnMap, onChange = vm::setTrafficOnMap)
                     TextSetting(stringResource(R.string.tomtom_key), settings.tomtomKey, secret = true, onSave = vm::setTomTomKey)
+                    TrafficStatusRow(vm)
+                    val manual = vm.avoidAreas.collectAsStateWithLifecycle().value.count { it.source == AvoidArea.Source.MANUAL }
+                    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(stringResource(R.string.manual_closures), style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                if (manual == 0) "Žádné – nahlásíš je tlačítkem ⛔ během jízdy" else "$manual aktivních (platí 14 dní)",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = Hud.TextSecondary,
+                            )
+                        }
+                        if (manual > 0) TextButton(onClick = vm::clearManualClosures) { Text(stringResource(R.string.clear), color = Hud.PapayaLight) }
+                    }
                 }
                 Card(stringResource(R.string.avoid)) {
                     SwitchRow(stringResource(R.string.avoid_tolls), settings.avoidTolls) { vm.setAvoidance(tolls = it) }
@@ -151,6 +166,23 @@ private fun SwitchRow(title: String, checked: Boolean, subtitle: String? = null,
             onCheckedChange = onChange,
             colors = SwitchDefaults.colors(checkedTrackColor = Hud.Papaya, checkedThumbColor = Color(0xFF1A0D00)),
         )
+    }
+}
+
+@Composable
+private fun TrafficStatusRow(vm: MainViewModel) {
+    val status = vm.trafficStatus.collectAsStateWithLifecycle().value
+    val (text, color) = when {
+        status.isHealthy -> "OK · naposledy ${cz.fenixen.navigation.core.format.CzechFormat.clock(status.lastOkMillis!!)}" to Hud.Mint
+        status.lastError != null -> status.lastError.orEmpty() to Hud.Red
+        else -> "Zatím neověřeno" to Hud.TextSecondary
+    }
+    Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(stringResource(R.string.traffic_status), style = MaterialTheme.typography.bodyLarge)
+            Text(text, style = MaterialTheme.typography.bodyMedium, color = color)
+        }
+        TextButton(onClick = vm::testTrafficKey) { Text(stringResource(R.string.traffic_test), color = Hud.PapayaLight) }
     }
 }
 

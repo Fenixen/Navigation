@@ -123,6 +123,17 @@ internal object ValhallaParser {
                 put("type", "break")
             }
         }
+        if (request.avoid.isNotEmpty()) {
+            // Uzavírky: Valhalla nepoužije hrany grafu nejblíž těmto bodům.
+            putJsonArray("exclude_locations") {
+                request.avoid.forEach { p ->
+                    addJsonObject {
+                        put("lat", p.lat)
+                        put("lon", p.lon)
+                    }
+                }
+            }
+        }
         put("costing", "auto")
         putJsonObject("costing_options") {
             putJsonObject("auto") {

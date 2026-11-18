@@ -50,6 +50,8 @@ fun MapControls(
     onLockMax: () -> Unit,
     onToggleOrientation: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Only while navigating: "the road ahead is closed" → detour. */
+    onReportClosure: (() -> Unit)? = null,
 ) {
     GlassPanel(modifier.width(58.dp), shape = RoundedCornerShape(29.dp)) {
         Column(Modifier.padding(vertical = 6.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -75,6 +77,12 @@ fun MapControls(
             ZoomLockTile(camera, onAutoZoom, onLockCurrent, onLockMax)
             ControlButton(onClick = onZoomOut, description = stringResource(R.string.zoom_out)) {
                 Icon(painterResource(R.drawable.ic_remove), null, Modifier.size(22.dp))
+            }
+            if (onReportClosure != null) {
+                Divider()
+                ControlButton(onClick = onReportClosure, description = stringResource(R.string.report_closure)) {
+                    Icon(painterResource(R.drawable.ic_block), null, Modifier.size(24.dp), tint = Hud.Red)
+                }
             }
         }
     }

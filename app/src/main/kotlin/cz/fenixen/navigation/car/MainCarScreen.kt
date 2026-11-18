@@ -141,6 +141,16 @@ class MainCarScreen(
                     .setOnClickListener { renderer.controller?.showOverview() }
                     .build(),
             )
+            .addAction(
+                // Uzavírka před námi → objížďka (jedno klepnutí, bez psaní).
+                Action.Builder()
+                    .setIcon(CarModels.icon(carContext, R.drawable.ic_block))
+                    .setOnClickListener {
+                        session.reportClosureAhead()
+                        toast("Hledám objížďku")
+                    }
+                    .build(),
+            )
             .build()
     }
 

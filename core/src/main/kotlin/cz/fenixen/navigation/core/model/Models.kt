@@ -132,7 +132,20 @@ data class RouteRequest(
     val options: RouteOptions = RouteOptions(),
     /** Pass-through points (no stop) – used to make Valhalla follow a traffic-aware path. */
     val via: List<ViaPoint> = emptyList(),
+    /** Points on closed roads – the router must not use the roads at these points. */
+    val avoid: List<GeoPoint> = emptyList(),
 )
+
+/** A road section the router has to avoid (closure from live traffic or reported by the driver). */
+data class AvoidArea(
+    val id: String,
+    val points: List<GeoPoint>,
+    val expiresAtMillis: Long,
+    val source: Source,
+    val label: String? = null,
+) {
+    enum class Source { TRAFFIC, MANUAL }
+}
 
 /** Point the route must pass, optionally in a given direction (avoids snapping to the opposite carriageway). */
 data class ViaPoint(val point: GeoPoint, val bearing: Double? = null)

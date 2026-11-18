@@ -57,6 +57,18 @@ class RouteMatchingTest {
     }
 
     @Test
+    fun `avoid points stay inside the closed section`() {
+        val section = route.geometry.slice(10_000.0, 10_500.0)
+        val pts = RouteMatching.avoidPoints(section)
+        assertTrue(pts.size in 1..5)
+        pts.forEach { p ->
+            val along = route.geometry.project(p).distanceAlong
+            assertTrue(along in 10_020.0..10_480.0, "point at $along is too close to a junction end")
+        }
+        assertEquals(1, RouteMatching.avoidPoints(route.geometry.slice(10_000.0, 10_040.0)).size)
+    }
+
+    @Test
     fun `query boxes cover the road ahead in chunks`() {
         val boxes = RouteMatching.boundsAhead(route, 1_000.0, aheadM = 80_000.0, chunkM = 40_000.0)
         assertEquals(2, boxes.size)

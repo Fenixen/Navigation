@@ -110,6 +110,21 @@ object RouteMatching {
         }
     }
 
+    /**
+     * Points that block a closed section for the router: inside the section only (not at its ends –
+     * a point near a junction would also block the crossing road), at most [max] of them.
+     */
+    fun avoidPoints(line: List<GeoPoint>, max: Int = 5): List<GeoPoint> {
+        if (line.isEmpty()) return emptyList()
+        if (line.size == 1) return line
+        val poly = Polyline(line)
+        val margin = 25.0
+        if (poly.length < 2 * margin + 10) return listOf(poly.pointAt(poly.length / 2))
+        val usable = poly.length - 2 * margin
+        val n = (usable / 120.0).toInt().coerceIn(1, max)
+        return (0 until n).map { i -> poly.pointAt(margin + usable * (i + 0.5) / n) }
+    }
+
     private fun sample(points: List<GeoPoint>, max: Int): List<GeoPoint> {
         if (points.size <= max) return points
         val step = (points.size - 1).toDouble() / (max - 1)

@@ -85,6 +85,21 @@ fun RoutePreviewSheet(
     BottomCard(modifier) {
         Text(state.destination.name, style = MaterialTheme.typography.headlineSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         state.destination.address?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = Hud.TextSecondary, maxLines = 1) }
+        if (state.avoidedClosures > 0) {
+            Spacer(Modifier.height(8.dp))
+            Row(
+                Modifier.clip(RoundedCornerShape(10.dp)).background(Hud.Red.copy(alpha = 0.15f)).padding(horizontal = 10.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(painterResource(R.drawable.ic_block), null, Modifier.size(16.dp), tint = Hud.Red)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    stringResource(R.string.avoids_closures) + if (state.avoidedClosures > 1) " (${state.avoidedClosures})" else "",
+                    color = Hud.Red,
+                    style = MaterialTheme.typography.labelLarge,
+                )
+            }
+        }
         Spacer(Modifier.height(14.dp))
         val times = state.routes.map(::effectiveDuration)
         val fastest = times.min()

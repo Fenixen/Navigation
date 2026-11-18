@@ -88,6 +88,24 @@ class ValhallaParserTest {
     }
 
     @Test
+    fun `closures become exclude_locations and via points are through locations`() {
+        val req = RouteRequest(
+            origin = GeoPoint(49.19, 16.61),
+            destination = GeoPoint(49.59, 17.25),
+            via = listOf(cz.fenixen.navigation.core.model.ViaPoint(GeoPoint(49.3, 16.9), 45.0)),
+            avoid = listOf(GeoPoint(49.2, 16.62)),
+        )
+        val json = ValhallaParser.buildRouteRequest(req, "cs-CZ")
+        val exclude = json["exclude_locations"]!!.jsonArray
+        assertEquals(1, exclude.size)
+        assertEquals(49.2, exclude[0].jsonObject["lat"]!!.jsonPrimitive.double)
+        val via = json["locations"]!!.jsonArray[1].jsonObject
+        assertEquals("through", via["type"]!!.jsonPrimitive.content)
+        assertEquals(45, via["heading"]!!.jsonPrimitive.int)
+        assertNull(json["alternates"], "Valhalla cannot do alternates with via points")
+    }
+
+    @Test
     fun `maps no-route error`() {
         val err = ValhallaParser.parseError(
             HttpResult(400, """{"error_code":442,"error":"No path could be found for input","status_code":400}"""),

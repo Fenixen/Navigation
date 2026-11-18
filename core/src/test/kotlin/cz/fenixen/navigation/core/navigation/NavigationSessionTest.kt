@@ -8,6 +8,7 @@ import cz.fenixen.navigation.core.model.Route
 import cz.fenixen.navigation.core.model.RouteRequest
 import cz.fenixen.navigation.core.geo.GeoBounds
 import cz.fenixen.navigation.core.geo.GeoPoint
+import cz.fenixen.navigation.core.model.AvoidArea
 import cz.fenixen.navigation.core.model.IncidentCategory
 import cz.fenixen.navigation.core.model.RouteOptions
 import cz.fenixen.navigation.core.model.RouteTraffic
@@ -273,6 +274,67 @@ class NavigationSessionTest {
         runCurrent()
         assertEquals(null, assertIs<NavigationState.Navigating>(session.state.value).fasterRoute, "snoozed for 10 minutes")
         session.stop()
+    }
+
+    @Test
+    fun `closure on the planned route is avoided before the driver even starts`() = runTest {
+        val closure = TrafficIncident("closed", IncidentCategory.ROAD_CLOSED, highway.geometry.slice(20_000.0, 21_000.0))
+        val detour = cz.fenixen.navigation.core.routing.ValhallaParser.parseRouteResponse(city).first()
+        val router = object : RoutingProvider {
+            val requests = mutableListOf<RouteRequest>()
+            override suspend fun route(request: RouteRequest): List<Route> {
+                requests += request
+                return listOf(if (request.avoid.isEmpty()) highway else detour)
+            }
+        }
+        val session = NavigationSession(router, this, clock = { testScheduler.currentTime }, traffic = { IncidentTraffic(listOf(closure), null) })
+        session.onLocation(startFix(highway).copy(speedMps = 0.0))
+        session.planRoute(destination)
+        runCurrent()
+        val preview = assertIs<NavigationState.Preview>(session.state.value)
+        assertEquals(detour.geometry, preview.selected.geometry, "route goes around the closure")
+        assertEquals(1, preview.avoidedClosures)
+        val avoid = router.requests.last().avoid
+        assertTrue(avoid.isNotEmpty() && avoid.all { p -> closure.geometry.any { Geo.distance(it, p) < 200 } })
+        session.stop()
+    }
+
+    @Test
+    fun `reporting a closure blocks the road ahead and reroutes immediately`() = runTest {
+        val router = FakeRouter(listOf(highway))
+        val session = NavigationSession(router, this, clock = { testScheduler.currentTime })
+        val events = collectEvents(session)
+        session.onLocation(startFix(highway))
+        session.planRoute(destination, autoStart = true)
+        advanceUntilIdle()
+        val sim = RouteSimulator(highway)
+        for (t in 0..60) session.onLocation(sim.fixAt(t.toDouble(), 0)!!)
+        val along = assertIs<NavigationState.Navigating>(session.state.value).progress!!.distanceAlong
+
+        session.reportClosureAhead()
+        advanceUntilIdle()
+        val area = session.avoidAreas.value.single()
+        assertEquals(AvoidArea.Source.MANUAL, area.source)
+        assertTrue(area.points.all { p -> highway.geometry.project(p).distanceAlong > along + 30 }, "blocks only the road ahead")
+        assertEquals(area.points, router.requests.last().avoid, "reroute request carries the closure")
+        assertTrue(events.any { it is NavigationEvent.Speak && it.text.contains("objížďku") })
+        session.stop()
+    }
+
+    @Test
+    fun `closures that make the destination unreachable are ignored rather than failing`() = runTest {
+        val router = object : RoutingProvider {
+            override suspend fun route(request: RouteRequest): List<Route> {
+                if (request.avoid.isNotEmpty()) throw RoutingException(RoutingException.Kind.NO_ROUTE, "none")
+                return listOf(highway)
+            }
+        }
+        val session = NavigationSession(router, this, clock = { testScheduler.currentTime })
+        session.restoreAvoids(listOf(AvoidArea("x", listOf(highway.destination), Long.MAX_VALUE, AvoidArea.Source.MANUAL)))
+        session.onLocation(startFix(highway))
+        session.planRoute(destination)
+        advanceUntilIdle()
+        assertIs<NavigationState.Preview>(session.state.value)
     }
 
     @Test

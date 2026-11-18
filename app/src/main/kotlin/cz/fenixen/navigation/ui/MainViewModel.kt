@@ -4,6 +4,7 @@ import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import cz.fenixen.navigation.appGraph
+import cz.fenixen.navigation.core.model.AvoidArea
 import cz.fenixen.navigation.core.model.Place
 import cz.fenixen.navigation.core.navigation.NavigationState
 import cz.fenixen.navigation.core.search.GeoUri
@@ -114,6 +115,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun startNavigation() = session.startNavigation()
     fun stopNavigation() = session.stop()
     fun acceptFasterRoute() = session.acceptFasterRoute()
+    fun reportClosure() = session.reportClosureAhead()
+    fun clearManualClosures() = session.clearAvoids(AvoidArea.Source.MANUAL)
+
+    val avoidAreas = session.avoidAreas
+    val trafficStatus = graph.traffic.status
+
+    /** Quick key check: incidents around the current position (or Brno) → status shows OK / the error. */
+    fun testTrafficKey() {
+        val center = lastFix.value?.point ?: cz.fenixen.navigation.core.geo.GeoPoint(49.195, 16.608)
+        viewModelScope.launch {
+            runCatching {
+                graph.traffic.incidents(cz.fenixen.navigation.core.geo.GeoBounds(center.lat - 0.05, center.lon - 0.08, center.lat + 0.05, center.lon + 0.08))
+            }
+        }
+    }
     fun dismissFasterRoute() = session.dismissFasterRoute()
     fun retry() = session.retry()
 
